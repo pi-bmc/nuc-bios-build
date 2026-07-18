@@ -92,3 +92,28 @@ stay on the 8 MiB flash (a Macronix MX25L6405, SOIC-8, not socketed). Keep
 the stock backup off-device; recovery without it needs an external SOIC-8
 clip. Keep the BIOS-security jumper in normal mode — the port's PTT fTPM
 needs the ME running.
+
+## Flasher live ISO (flash remotely over the JetKVM)
+
+To flash without a local shell, build a self-contained bootable ISO that
+carries `flashrom`, the coreboot ROM, and helper scripts — attach it to the
+NUC as JetKVM virtual media and boot it:
+
+```sh
+kas build kas-flasher.yml
+# -> build/tmp-flasher/deploy/images/intel-corei7-64/nuc-flasher-image-*.iso
+```
+
+It's an `intel-corei7-64` live image (hybrid BIOS+UEFI El Torito, ~360 MiB —
+`linux-firmware` stripped) built under the `flasher` multiconfig;
+`nuc-coreboot-rom` pulls the ROM in from the default multiconfig, so the ISO
+always carries the current coreboot output. On boot: root logs in with no
+password, sshd + DHCP come up, and the login banner lists the steps:
+
+1. `backup-bios` — reads + verifies the factory firmware to `/root`
+2. `scp` it off the machine (the rootfs is RAM-only; `ip addr` for the IP)
+3. `flash-coreboot` — writes the BIOS region only, then verifies
+4. `poweroff`, then power-cycle
+
+Recovery if it won't POST: boot the ISO again and
+`flashrom -p internal --ifd -i bios -w /root/stock-bios.rom`.

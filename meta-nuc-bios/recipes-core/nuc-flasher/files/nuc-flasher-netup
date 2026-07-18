@@ -1,0 +1,21 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          nuc-flasher-netup
+# Required-Start:    $local_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: DHCP on every wired interface (for scp'ing the backup off)
+### END INIT INFO
+# Bring up all non-loopback interfaces with DHCP so the operator can copy the
+# stock backup off over ssh. Best-effort; failure is non-fatal.
+case "$1" in
+    start)
+        for i in $(ls /sys/class/net 2>/dev/null); do
+            [ "$i" = "lo" ] && continue
+            ip link set "$i" up 2>/dev/null || true
+            udhcpc -i "$i" -b -t 3 -T 2 -q 2>/dev/null || true
+        done
+        ;;
+    stop) : ;;
+    *) echo "Usage: $0 {start|stop}"; exit 1 ;;
+esac

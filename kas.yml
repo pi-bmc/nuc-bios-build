@@ -20,6 +20,21 @@ repos:
       meta:
       meta-poky:
 
+  # flashrom + pciutils for the flasher live ISO (meta-oe).
+  meta-openembedded:
+    url: https://git.openembedded.org/meta-openembedded
+    branch: scarthgap
+    layers:
+      meta-oe:
+
+  # intel-corei7-64 machine (real-hardware BSP: i915/e1000e/ahci/xhci) used by
+  # the flasher multiconfig to build a bootable live ISO for the NUC.
+  meta-intel:
+    url: https://git.yoctoproject.org/meta-intel
+    branch: scarthgap
+    layers:
+      .:
+
   # Local layer (inside this repo)
   meta-nuc-bios:
     path: meta-nuc-bios
@@ -42,6 +57,10 @@ local_conf_header:
     # Payload for the coreboot ROM: "edk2" (UefiPayloadPkg, default) or
     # "linuxboot" (linux-linuxboot bzImage + u-root initramfs, built here).
     NUC_BIOS_PAYLOAD = "edk2"
+    # Second multiconfig (conf/multiconfig/flasher.conf) builds a bootable
+    # intel-corei7-64 live ISO carrying flashrom + the coreboot ROM. Build it
+    # with:  kas build kas-flasher.yml   (or bitbake mc:flasher:nuc-flasher-image)
+    BBMULTICONFIG = "flasher"
     # Broadwell memory-init blobs (mrc.bin + refcode.elf) are extracted at
     # build time from a pinned public donor image (MrChromebox samus) by
     # default. Uncomment to supply your own pair instead, or set

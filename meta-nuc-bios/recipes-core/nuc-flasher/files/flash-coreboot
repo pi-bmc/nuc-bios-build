@@ -1,0 +1,35 @@
+#!/bin/sh
+# Write coreboot into the NUC's BIOS region only, leaving the factory
+# descriptor / GbE / ME regions on the chip untouched.
+set -eu
+
+ROM=/opt/coreboot/coreboot-nuc5i7ryh.rom
+BACKUP="${BACKUP:-/root/stock-bios.rom}"
+
+[ -f "${ROM}" ] || { echo "missing ${ROM}"; exit 1; }
+if [ -f "${ROM}.NOT-BOOTABLE" ]; then
+    echo "REFUSING: ${ROM} was built without memory-init blobs (compile check only)."
+    echo "Rebuild with COREBOOT_BLOBS_DIR set or the donor blobs enabled."
+    exit 1
+fi
+if [ ! -f "${BACKUP}" ]; then
+    echo "No stock backup at ${BACKUP}."
+    echo "Run 'backup-bios' first and copy the result off this machine."
+    echo "(Override with BACKUP=/path if you have already saved one elsewhere.)"
+    exit 1
+fi
+
+echo "Target : NUC5i7RYH internal SPI, BIOS region only (--ifd -i bios)"
+echo "Writing: ${ROM}"
+echo "Backup : ${BACKUP} present"
+printf "Type YES to flash: "
+read ans
+[ "${ans}" = "YES" ] || { echo "aborted"; exit 1; }
+
+# flashrom reads the chip's own descriptor to locate the BIOS region and
+# writes just that slice; -w also verifies the write.
+flashrom -p internal --ifd -i bios -w "${ROM}"
+
+echo ""
+echo "OK: BIOS region written and verified. Power-cycle the NUC."
+echo "If it does not POST, boot this ISO again and: flashrom -p internal --ifd -i bios -w ${BACKUP}"

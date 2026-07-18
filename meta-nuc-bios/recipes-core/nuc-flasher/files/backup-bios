@@ -1,0 +1,28 @@
+#!/bin/sh
+# Read the NUC's current SPI flash twice and save a verified backup.
+# The live rootfs is in RAM, so the backup MUST be copied off the machine
+# before you reboot (see the reminder printed at the end).
+set -eu
+
+OUT="${1:-/root/stock-bios.rom}"
+
+echo ">> Reading current flash (full 8 MiB chip), pass 1/2 ..."
+flashrom -p internal -r "${OUT}.1"
+echo ">> Reading current flash, pass 2/2 ..."
+flashrom -p internal -r "${OUT}.2"
+
+if cmp -s "${OUT}.1" "${OUT}.2"; then
+    mv "${OUT}.1" "${OUT}"
+    rm -f "${OUT}.2"
+    echo ""
+    echo "OK: stock firmware backed up to ${OUT} ($(wc -c < "${OUT}") bytes)"
+    echo ""
+    echo "!!! COPY THIS OFF THE MACHINE NOW -- it is in RAM and is lost on reboot."
+    echo "    From another host:  scp root@<this-nuc-ip>:${OUT} ."
+    echo "    (find the IP with 'ip addr'; sshd is running, root has no password)"
+else
+    echo ""
+    echo "ERROR: the two reads differ -- the SPI read is unstable."
+    echo "Do NOT flash. Re-run backup-bios until two reads match."
+    exit 1
+fi

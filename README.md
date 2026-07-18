@@ -53,10 +53,19 @@ HDMI/mDP, I218-V/NVMe/USB3/S3 work, PTT fTPM exposed). Payload options
 Broadwell has no native raminit; a bootable ROM needs Intel's `mrc.bin` +
 `refcode.elf`. By default the coreboot recipe extracts both at build time
 from a pinned public donor image (MrChromebox's samus/Chromebook-Pixel-2015
-build — same Broadwell-U silicon) using the in-tree cbfstool. Overrides: set
-`COREBOOT_BLOBS_DIR` to supply your own pair, or
+build — same Broadwell-U silicon) using the in-tree cbfstool, and applies a
+pattern-guarded one-byte refcode patch so the refcode doesn't disable the
+NUC's I218-V GbE (the blob hardcodes GbE-enable to 0). The blobs can be
+produced and inspected without the multi-hour coreboot compile:
+
+```sh
+kas shell kas.yml -c 'bitbake coreboot -c extract_blobs'
+```
+
+Overrides: `COREBOOT_BLOBS_DIR` to supply your own pair,
 `COREBOOT_USE_DONOR_BLOBS = "0"` for a blob-less compile check marked
-`.NOT-BOOTABLE`. GbE caveat and details:
+`.NOT-BOOTABLE`, `COREBOOT_REFCODE_GBE_PATCH = "0"` to skip the GbE patch.
+Full story:
 [the blob README](meta-nuc-bios/recipes-bsp/coreboot/files/blobs/README.md).
 
 ## Flashing

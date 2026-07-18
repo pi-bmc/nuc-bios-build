@@ -22,7 +22,13 @@ inherit deploy
 # master. Refresh the patch from
 #   https://review.coreboot.org/changes/coreboot~94032/revisions/current/patch
 # when a new patchset lands (and drop it entirely once the port merges).
-SRC_URI = "git://review.coreboot.org/coreboot.git;protocol=https;branch=main \
+# Fetched from the GitHub mirror: full clones off review.coreboot.org
+# routinely stall/drop (SIGPIPE mid-clone); the mirror serves the same
+# history, and the org also mirrors the submodule repos (coreboot's
+# .gitmodules URLs are origin-relative). do_extract_blobs still pins the
+# vboot submodule URL explicitly so it never depends on what bitbake set
+# origin to.
+SRC_URI = "git://github.com/coreboot/coreboot.git;protocol=https;branch=main \
            file://0001-mb-intel-nuc5i5ryb-Add-Intel-Broadwell-U-NUC-mainboard.patch \
            file://nuc5i7ryh.config \
            file://payload-edk2.config \
@@ -67,14 +73,22 @@ NUC_BIOS_PAYLOAD ??= "edk2"
 #   3. COREBOOT_USE_DONOR_BLOBS = 0  -- blob-less CI-style compile check;
 #      the ROM links but DOES NOT BOOT and is marked .NOT-BOOTABLE.
 #
-# GbE note: coreboot's Broadwell docs describe a one-byte refcode patch to
-# keep the refcode from disabling an Intel GbE MAC (the NUC has an I218-V),
-# but the documented offset/value pair applies only to the exact Librem 13 v1
-# refcode binary (sha256 8a919ffe...) -- the samus-extracted refcode differs,
-# so NO patch is applied here. The nuc5i5ryb port reports I218-V working with
-# unpatched blobs; if Ethernet is dead under coreboot, this is the trail.
+# GbE: the Broadwell refcode hardcodes its internal GbE-enable field to 0
+# (movb $0x0,0x37e(%ebx)); without intervention it disables the PCH GbE MAC
+# and the OS never sees the I218-V (Documentation/soc/intel/broadwell/
+# blobs.md, and nothing in coreboot's own Broadwell code re-enables it).
+# The docs' fix is a one-byte patch, but their file offset (131253) is only
+# valid for the exact Librem 13 v1 refcode binary -- the samus-extracted one
+# is a different build (same instruction sequence, shifted ~0x1cc). So the
+# patch here locates the documented instruction by byte pattern, requires it
+# to be unique, and flips the immediate to 1. Verified against the pinned
+# donor: one hit, byte 0x00 at file offset 0x1fff1. Setting enable=1 is what
+# a GbE-equipped board wants regardless (the Gerrit 94032 port reports the
+# I218-V working, with unstated blob provenance -- if that was ever true
+# unpatched, enabling is still correct, merely redundant).
 COREBOOT_BLOBS_DIR ??= ""
 COREBOOT_USE_DONOR_BLOBS ??= "1"
+COREBOOT_REFCODE_GBE_PATCH ??= "1"
 
 BLOBS_DEST = "${S}/3rdparty/blobs/mainboard/intel/nuc5i5ryb"
 
@@ -112,25 +126,68 @@ EOF
     fi
 }
 
-do_compile() {
-    # Donor-blob extraction (mode 2). cbfstool needs the vboot submodule;
-    # the fetcher's plain clone does not carry submodules, so init it here
-    # (network is on for this task anyway).
-    if [ -z "${COREBOOT_BLOBS_DIR}" ] && [ "${COREBOOT_USE_DONOR_BLOBS}" = "1" ]; then
-        cd ${S}
-        git submodule update --init --checkout 3rdparty/vboot
-        oe_runmake -C util/cbfstool
-        install -d ${BLOBS_DEST}
-        ./util/cbfstool/cbfstool ${WORKDIR}/${COREBOOT_DONOR_ROM} \
-            extract -f ${BLOBS_DEST}/mrc.bin -n mrc.bin
-        ./util/cbfstool/cbfstool ${WORKDIR}/${COREBOOT_DONOR_ROM} \
-            extract -m x86 -f ${BLOBS_DEST}/refcode.elf -n fallback/refcode
-        for f in mrc.bin refcode.elf; do
-            [ -s "${BLOBS_DEST}/$f" ] || \
-                bbfatal "donor blob extraction produced an empty $f -- inspect ${WORKDIR}/${COREBOOT_DONOR_ROM} with util/cbfstool"
-        done
+# Donor-blob extraction (mode 2), a standalone task so the blobs can be
+# produced and inspected without the multi-hour coreboot compile:
+#   bitbake coreboot -c extract_blobs
+# (also runs automatically before do_compile). cbfstool needs the vboot
+# submodule, which the fetcher's plain clone does not carry -- hence the
+# network flag on this task.
+do_extract_blobs() {
+    if [ -n "${COREBOOT_BLOBS_DIR}" ] || [ "${COREBOOT_USE_DONOR_BLOBS}" != "1" ]; then
+        bbnote "donor blob extraction skipped (COREBOOT_BLOBS_DIR set or COREBOOT_USE_DONOR_BLOBS != 1)"
+        return 0
     fi
 
+    cd ${S}
+    git submodule init 3rdparty/vboot
+    git config submodule.3rdparty/vboot.url https://github.com/coreboot/vboot.git
+    git submodule update --checkout 3rdparty/vboot
+    # cbfstool runs on the build host; keep bitbake's exported cross CC (the
+    # corei7-64 target compiler) out of its build.
+    oe_runmake -C util/cbfstool CC="${BUILD_CC}" LDFLAGS=""
+
+    install -d ${BLOBS_DEST}
+    ./util/cbfstool/cbfstool ${WORKDIR}/${COREBOOT_DONOR_ROM} \
+        extract -f ${BLOBS_DEST}/mrc.bin -n mrc.bin
+    ./util/cbfstool/cbfstool ${WORKDIR}/${COREBOOT_DONOR_ROM} \
+        extract -m x86 -f ${BLOBS_DEST}/refcode.elf -n fallback/refcode
+
+    for f in mrc.bin refcode.elf; do
+        [ -s "${BLOBS_DEST}/$f" ] || \
+            bbfatal "donor blob extraction produced an empty $f -- inspect ${WORKDIR}/${COREBOOT_DONOR_ROM} with util/cbfstool"
+    done
+
+    # Keep the refcode from disabling the I218-V (see the GbE comment above):
+    # find movb $0x0,0x37e(%ebx) [c6 83 7e 03 00 00 00], require exactly one
+    # occurrence, flip the immediate to 1. Idempotent; refuses ambiguity.
+    if [ "${COREBOOT_REFCODE_GBE_PATCH}" = "1" ]; then
+        python3 - "${BLOBS_DEST}/refcode.elf" <<'PYEOF'
+import sys
+path = sys.argv[1]
+data = bytearray(open(path, 'rb').read())
+disable = bytes.fromhex('c6837e03000000')  # movb $0x0,0x37e(%ebx)
+enable  = bytes.fromhex('c6837e03000001')  # movb $0x1,0x37e(%ebx)
+if data.count(enable) == 1 and data.count(disable) == 0:
+    print('refcode: GbE enable already patched')
+    sys.exit(0)
+n = data.count(disable)
+if n != 1:
+    sys.exit('refcode: expected exactly one GbE-disable site, found %d -- '
+             'donor refcode changed, re-verify before patching' % n)
+off = data.index(disable) + 6
+data[off] = 0x01
+open(path, 'wb').write(data)
+print('refcode: enabled Intel GbE (patched byte at file offset 0x%x)' % off)
+PYEOF
+    fi
+
+    bbplain "extracted Broadwell blobs into ${BLOBS_DEST}:"
+    bbplain "$(sha256sum ${BLOBS_DEST}/mrc.bin ${BLOBS_DEST}/refcode.elf)"
+}
+do_extract_blobs[network] = "1"
+addtask extract_blobs after do_patch before do_compile
+
+do_compile() {
     # The i386 cross toolchain firmware stages are built with. Downloads the
     # gcc/binutils source tarballs on first build (cached in the workdir).
     # libgfxinit (native Broadwell graphics init, the port's tested video

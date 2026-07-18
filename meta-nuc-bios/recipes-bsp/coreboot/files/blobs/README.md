@@ -34,18 +34,29 @@ COREBOOT_BLOBS_DIR = "/path/to/blobs"
 Setting `COREBOOT_USE_DONOR_BLOBS = "0"` with no `COREBOOT_BLOBS_DIR` builds
 the CI-style blob-less compile check (deployed ROM marked `.NOT-BOOTABLE`).
 
-## I218-V GbE caveat (read if Ethernet dies under coreboot)
+## I218-V GbE refcode patch (applied by default)
 
-The Broadwell `pei_data` has no `gbe_enable` field, and the coreboot docs
-describe a one-byte refcode patch to keep the refcode from disabling an
-Intel GbE MAC — **for the Librem 13 v1 refcode binary only** (sha256
-`8a919ffe…`, file offset 131253: `0x00` → `0x01`). The samus-extracted
-refcode is a different binary (that offset holds `0x32`), so the recipe does
-NOT apply the patch. The nuc5i5ryb port (Gerrit 94032) reports the I218-V
-working with unpatched blobs. If Ethernet turns out dead under coreboot,
-this is the first thing to investigate — likely by locating the matching
-field in the samus refcode or sourcing the Librem refcode and patching per
-the docs.
+The Broadwell `pei_data` has no `gbe_enable` field, and the refcode
+hardcodes its internal GbE-enable to 0 — `movb $0x0,0x37e(%ebx)` in its
+settings-struct init — after which it disables the PCH GbE MAC and the OS
+never sees the I218-V (`Documentation/soc/intel/broadwell/blobs.md`;
+nothing in coreboot's own Broadwell code re-enables it).
+
+The coreboot docs fix this with a one-byte patch at file offset 131253, but
+that offset is only valid for the exact Librem 13 v1 refcode binary they
+analyzed (sha256 `8a919ffe…`). The samus-extracted refcode is a *different
+build* of the same code: the documented 6-instruction sequence appears
+byte-for-byte, exactly once, but shifted (the disable byte lives at
+`0x1fff1`, and `0x200b5` holds unrelated code — blind offset-patching would
+corrupt it).
+
+So `do_extract_blobs` patches by **pattern**: it finds
+`c6 83 7e 03 00 00 00`, requires exactly one occurrence, and flips the
+immediate to `0x01`. It is idempotent and refuses to touch a refcode where
+the pattern is missing or ambiguous. Disable with
+`COREBOOT_REFCODE_GBE_PATCH = "0"` (the Gerrit 94032 port reports the
+I218-V working with blobs of unstated provenance, so unpatched *may* work —
+but enable=1 is what a GbE-equipped board wants either way).
 
 ## ME region
 

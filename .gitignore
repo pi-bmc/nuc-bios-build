@@ -23,3 +23,6 @@ meta-openembedded/
 # (see meta-nuc-bios/recipes-bsp/coreboot/files/blobs/README.md)
 meta-nuc-bios/recipes-bsp/coreboot/files/blobs/*
 !meta-nuc-bios/recipes-bsp/coreboot/files/blobs/README.md
+
+# local build log
+kas-build.log

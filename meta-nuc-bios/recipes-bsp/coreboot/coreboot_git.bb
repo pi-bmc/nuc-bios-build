@@ -11,31 +11,26 @@ payload-edk2.config) or linuxboot (linux-linuxboot bzImage + u-root \
 initramfs). Only the 6 MiB BIOS region of the 8 MiB flash is targeted; the \
 factory descriptor/GbE/ME regions stay on the chip."
 HOMEPAGE = "https://review.coreboot.org/c/coreboot/+/94032"
-LICENSE = "GPL-2.0-only"
-LIC_FILES_CHKSUM = "file://COPYING;md5=751419260aa954499f7abaabaa882bbe"
+
+# Source pin + license shared with coreboot-toolchain-native.
+require coreboot-source.inc
 
 inherit deploy
 
-# coreboot master, pinned 2026-07-16. The vendored board patch is Gerrit
-# 94032's current patchset with its two cosmetic hunks (mainboard docs
-# index, MAINTAINERS) stripped, leaving only new-file additions -- upstream
-# stacks it on an unrelated unmerged change, so it is rebased here onto real
-# master. Refresh the patch from
+# The vendored board patch is Gerrit 94032's current patchset with its two
+# cosmetic hunks (mainboard docs index, MAINTAINERS) stripped, leaving only
+# new-file additions -- upstream stacks it on an unrelated unmerged change,
+# so it is rebased here onto real master. Refresh the patch from
 #   https://review.coreboot.org/changes/coreboot~94032/revisions/current/patch
 # when a new patchset lands (and drop it entirely once the port merges).
-# Fetched from the GitHub mirror: full clones off review.coreboot.org
-# routinely stall/drop (SIGPIPE mid-clone); the mirror serves the same
-# history, and the org also mirrors the submodule repos (coreboot's
-# .gitmodules URLs are origin-relative). do_extract_blobs still pins the
-# vboot submodule URL explicitly so it never depends on what bitbake set
-# origin to.
-SRC_URI = "git://github.com/coreboot/coreboot.git;protocol=https;branch=main \
+# do_extract_blobs pins the vboot submodule URL explicitly so it never
+# depends on what bitbake set origin to.
+SRC_URI = "${COREBOOT_GIT_URI} \
            file://0001-mb-intel-nuc5i5ryb-Add-Intel-Broadwell-U-NUC-mainboard.patch \
            file://nuc5i7ryh.config \
            file://payload-edk2.config \
            file://payload-linuxboot.config \
            "
-SRCREV = "149d1494fa4db2b08e7a7a6f7bbf7c7d2e8e18ad"
 
 # Donor image for the Broadwell memory-init blobs: MrChromebox's public
 # coreboot+edk2 build for google/samus (Chromebook Pixel 2015, same
@@ -52,13 +47,20 @@ B = "${S}"
 
 COMPATIBLE_MACHINE = "nuc5i7ryh"
 
-# Kconfig host tools; libuuid for cbfstool's vboot lib. (The edk2 payload
-# builds in its own recipe now -- see edk2-uefipayload.)
-DEPENDS = "bison-native flex-native python3-native util-linux-native"
+# Kconfig host tools; libuuid for cbfstool's vboot lib; the i386-elf xgcc
+# cross toolchain comes prebuilt (sstate-cached) from
+# coreboot-toolchain-native -- editing this recipe no longer re-runs the
+# ~30-minute crossgcc bootstrap. (The edk2 payload likewise builds in its
+# own recipe -- see edk2-uefipayload.)
+DEPENDS = "bison-native flex-native python3-native util-linux-native coreboot-toolchain-native"
+
+# Where the staged toolchain lands (coreboot-toolchain-native installs it
+# under ${datadir}); coreboot's Makefile takes it via XGCCPATH (trailing
+# slash required -- it is used as a bare prefix).
+XGCC = "${STAGING_DATADIR_NATIVE}/coreboot-xgcc/bin/"
 
 # Network stays on for the whole compile: coreboot's build fetches its own
-# submodules (vboot, libgfxinit, intel-microcode, ...) and bootstraps the
-# i386 crossgcc toolchain from upstream tarballs. Same precedent as
+# submodules (vboot, libgfxinit, intel-microcode, ...). Same precedent as
 # nanokvm-build's GOTOOLCHAIN=auto recipes.
 do_compile[network] = "1"
 
@@ -118,10 +120,15 @@ do_configure() {
     fi
 
     if [ -n "${COREBOOT_BLOBS_DIR}" ] || [ "${COREBOOT_USE_DONOR_BLOBS}" = "1" ]; then
+        # The Broadwell Kconfig defaults for the blob paths are bare
+        # "mrc.bin"/"refcode.elf" (relative to the source top, where nothing
+        # is); point them at the extracted/user-supplied copies.
         cat >> ${B}/.config <<'EOF'
 CONFIG_USE_BLOBS=y
 CONFIG_HAVE_MRC=y
+CONFIG_MRC_FILE="3rdparty/blobs/mainboard/intel/nuc5i5ryb/mrc.bin"
 CONFIG_HAVE_REFCODE_BLOB=y
+CONFIG_REFCODE_BLOB_FILE="3rdparty/blobs/mainboard/intel/nuc5i5ryb/refcode.elf"
 EOF
     else
         bbwarn "coreboot: no blobs (COREBOOT_USE_DONOR_BLOBS=0, COREBOOT_BLOBS_DIR unset) -- building the CI-style blob-less ROM; it will NOT boot the NUC."
@@ -190,15 +197,18 @@ do_extract_blobs[network] = "1"
 addtask extract_blobs after do_patch before do_compile
 
 do_compile() {
-    # The i386 cross toolchain firmware stages are built with. Downloads the
-    # gcc/binutils source tarballs on first build (cached in the workdir).
-    # libgfxinit (native Broadwell graphics init, the port's tested video
-    # path) additionally needs a host Ada compiler -- install your distro's
-    # gcc-ada/gnat package or crossgcc skips GNAT and the build fails.
-    oe_runmake crossgcc-i386 CPUS=${@oe.utils.cpu_count()}
+    # Host-side tools (cbfstool & friends via HOSTCC) must use the build
+    # host's toolchain, not bitbake's cross CC. The firmware stages are
+    # compiled by the staged xgcc (XGCCPATH) from coreboot-toolchain-native.
+    unset CC CXX CPP AS AR LD RANLIB STRIP OBJCOPY NM CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
 
-    oe_runmake olddefconfig
-    oe_runmake
+    # Drop coreboot's build output so its toolchain probe (build/xcompile) is
+    # regenerated against the current XGCCPATH -- a stale cache from an
+    # earlier run records "no x86_32 toolchain" and make would reuse it.
+    rm -rf ${B}/build ${B}/.xcompile
+
+    oe_runmake olddefconfig XGCCPATH=${XGCC}
+    oe_runmake XGCCPATH=${XGCC}
 }
 
 do_deploy() {

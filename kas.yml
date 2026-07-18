@@ -1,0 +1,50 @@
+# kas configuration for the standalone NUC5i7RYH BIOS build
+# Usage: kas build kas.yml           -> deploys coreboot-nuc5i7ryh.rom under
+#        build/tmp/deploy/images/nuc5i7ryh/
+# Install kas: pip3 install kas
+
+header:
+  version: 14
+
+machine: nuc5i7ryh
+distro: poky
+target: coreboot
+
+build_system: openembedded
+
+repos:
+  poky:
+    url: https://git.yoctoproject.org/poky
+    branch: scarthgap
+    layers:
+      meta:
+      meta-poky:
+
+  # Local layer (inside this repo)
+  meta-nuc-bios:
+    path: meta-nuc-bios
+    layers:
+      .:
+
+local_conf_header:
+  nuc-bios: |
+    # NUC5i7RYH BIOS build configuration
+    MACHINE = "nuc5i7ryh"
+    DISTRO = "poky"
+    # Parallel build tuning
+    BB_NUMBER_THREADS = "${@oe.utils.cpu_count()}"
+    PARALLEL_MAKE = "-j ${@oe.utils.cpu_count()}"
+    # Shared download and sstate directories (can be overridden per user)
+    DL_DIR = "${TOPDIR}/downloads"
+    SSTATE_DIR = "${TOPDIR}/sstate-cache"
+    # Disable interactive prompts
+    CONNECTIVITY_CHECK_URIS = ""
+    # Payload for the coreboot ROM: "edk2" (UefiPayloadPkg, default) or
+    # "linuxboot" (linux-linuxboot bzImage + u-root initramfs, built here).
+    NUC_BIOS_PAYLOAD = "edk2"
+    # Broadwell memory-init blobs (mrc.bin + refcode.elf) are extracted at
+    # build time from a pinned public donor image (MrChromebox samus) by
+    # default. Uncomment to supply your own pair instead, or set
+    # COREBOOT_USE_DONOR_BLOBS = "0" for a blob-less compile check -- see
+    # meta-nuc-bios/recipes-bsp/coreboot/files/blobs/README.md.
+    #COREBOOT_BLOBS_DIR = "/path/to/blobs"

@@ -1,0 +1,25 @@
+*~
+*.swp
+*.o
+*.d
+cscope.out
+.vscode-ctags
+*.tar.gz
+
+# Yocto build artifacts
+build/
+downloads/
+sstate-cache/
+*.rom
+*.img
+*.wic
+*.wic.xz
+
+# Upstream layers fetched by kas
+poky/
+meta-openembedded/
+
+# Intel memory-init blobs are user-supplied and must never be committed
+# (see meta-nuc-bios/recipes-bsp/coreboot/files/blobs/README.md)
+meta-nuc-bios/recipes-bsp/coreboot/files/blobs/*
+!meta-nuc-bios/recipes-bsp/coreboot/files/blobs/README.md

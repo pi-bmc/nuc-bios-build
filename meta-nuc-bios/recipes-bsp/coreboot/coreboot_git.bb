@@ -4,11 +4,12 @@ DESCRIPTION = "Builds coreboot with the mb/intel/nuc5i5ryb mainboard port \
 NUC5i7RYH. The i7 kit uses the same NUC5iXRYB board as the i5 the port was \
 developed on -- same Wildcat Point-LP PCH, NCT5577D SIO, I218-V GbE; only \
 the soldered CPU/IGD differ, which coreboot probes at runtime. Payload is \
-selectable via NUC_BIOS_PAYLOAD: edk2 (UefiPayloadPkg, built by coreboot's \
-own payloads/external machinery -- the port's Kconfig wires CFR setup \
-options and SMMSTORE for it) or linuxboot (linux-linuxboot bzImage + u-root \
-initramfs from this multiconfig). Only the 6 MiB BIOS region of the 8 MiB \
-flash is targeted; the factory descriptor/GbE/ME regions stay on the chip."
+selectable via NUC_BIOS_PAYLOAD: edk2 (the edk2-uefipayload recipe's \
+UEFIPAYLOAD.fd, consumed as a prebuilt FV payload -- CFR setup options and \
+the SMMSTORE-backed EFI variable store are enabled explicitly in \
+payload-edk2.config) or linuxboot (linux-linuxboot bzImage + u-root \
+initramfs). Only the 6 MiB BIOS region of the 8 MiB flash is targeted; the \
+factory descriptor/GbE/ME regions stay on the chip."
 HOMEPAGE = "https://review.coreboot.org/c/coreboot/+/94032"
 LICENSE = "GPL-2.0-only"
 LIC_FILES_CHKSUM = "file://COPYING;md5=751419260aa954499f7abaabaa882bbe"
@@ -51,13 +52,13 @@ B = "${S}"
 
 COMPATIBLE_MACHINE = "nuc5i7ryh"
 
-# Kconfig host tools; nasm/python3/libuuid for the edk2 payload's BaseTools.
-DEPENDS = "bison-native flex-native nasm-native python3-native util-linux-native"
+# Kconfig host tools; libuuid for cbfstool's vboot lib. (The edk2 payload
+# builds in its own recipe now -- see edk2-uefipayload.)
+DEPENDS = "bison-native flex-native python3-native util-linux-native"
 
 # Network stays on for the whole compile: coreboot's build fetches its own
-# submodules (vboot, libgfxinit, intel-microcode, ...), bootstraps the i386
-# crossgcc toolchain from upstream tarballs, and clones the edk2 payload
-# (MrChromebox fork) when CONFIG_PAYLOAD_EDK2=y. Same precedent as
+# submodules (vboot, libgfxinit, intel-microcode, ...) and bootstraps the
+# i386 crossgcc toolchain from upstream tarballs. Same precedent as
 # nanokvm-build's GOTOOLCHAIN=auto recipes.
 do_compile[network] = "1"
 
@@ -100,7 +101,8 @@ do_configure() {
             -e "s#@INITRD@#${DEPLOY_DIR_IMAGE}/initramfs-u-root.cpio#" \
             ${WORKDIR}/payload-linuxboot.config >> ${B}/.config
     else
-        cat ${WORKDIR}/payload-edk2.config >> ${B}/.config
+        sed -e "s#@UEFIPAYLOAD@#${DEPLOY_DIR_IMAGE}/UEFIPAYLOAD.fd#" \
+            ${WORKDIR}/payload-edk2.config >> ${B}/.config
     fi
 
     if [ -n "${COREBOOT_BLOBS_DIR}" ]; then
@@ -213,11 +215,15 @@ addtask deploy after do_compile
 
 do_install[noexec] = "1"
 
-# LinuxBoot payload inputs come from this same multiconfig's deploy dir.
+# Payload inputs come from sibling recipes' deploy dirs: the edk2
+# UefiPayloadPkg FV (default) or the LinuxBoot kernel + u-root initramfs.
 python () {
     if d.getVar('NUC_BIOS_PAYLOAD') == 'linuxboot':
         d.appendVarFlag('do_compile', 'depends',
                         ' linux-linuxboot:do_deploy u-root:do_deploy')
+    else:
+        d.appendVarFlag('do_compile', 'depends',
+                        ' edk2-uefipayload:do_deploy')
 }
 
 # Firmware is not target userspace: the ROM embeds its own everything.

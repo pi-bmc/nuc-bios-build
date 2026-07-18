@@ -35,8 +35,8 @@ local_conf_header:
     BB_NUMBER_THREADS = "${@oe.utils.cpu_count()}"
     PARALLEL_MAKE = "-j ${@oe.utils.cpu_count()}"
     # Shared download and sstate directories (can be overridden per user)
-    DL_DIR = "${TOPDIR}/downloads"
-    SSTATE_DIR = "${TOPDIR}/sstate-cache"
+    # DL_DIR = "${TOPDIR}/downloads"
+    # SSTATE_DIR = "${TOPDIR}/sstate-cache"
     # Disable interactive prompts
     CONNECTIVITY_CHECK_URIS = ""
     # Payload for the coreboot ROM: "edk2" (UefiPayloadPkg, default) or
@@ -48,3 +48,6 @@ local_conf_header:
     # COREBOOT_USE_DONOR_BLOBS = "0" for a blob-less compile check -- see
     # meta-nuc-bios/recipes-bsp/coreboot/files/blobs/README.md.
     #COREBOOT_BLOBS_DIR = "/path/to/blobs"
+    # Shared download and sstate directories (can be overridden per user)
+    DL_DIR = "/opt/yocto/downloads"
+    SSTATE_DIR = "/opt/yocto/sstate-cache"

@@ -41,10 +41,20 @@ vendored here until it merges — boots Debian/Proxmox, libgfxinit lights
 HDMI/mDP, I218-V/NVMe/USB3/S3 work, PTT fTPM exposed). Payload options
 (`NUC_BIOS_PAYLOAD` in `kas.yml`):
 
-- `edk2` (default): UefiPayloadPkg via coreboot's own external-payload build.
-  Normal UEFI boot for stock OSes; the port wires its CFR setup menu (fan
-  profile, power-on-after-AC, Turbo, SATA, fTPM) into the EDK2 UI via
-  SMMSTORE.
+- `edk2` (default): UefiPayloadPkg built as its own Yocto recipe
+  (`edk2-uefipayload`, `bitbake edk2-uefipayload` builds just the payload)
+  from the pinned MrChromebox edk2 fork — the tree coreboot's own
+  external-payload machinery defaults to, carrying the CFR SetupMenu, the
+  SMMSTORE variable driver, and the cbmem console. coreboot consumes the
+  deployed `UEFIPAYLOAD.fd` as a prebuilt FV payload. Normal UEFI boot for
+  stock OSes; the port's CFR setup menu (fan profile, power-on-after-AC,
+  Turbo, SATA, fTPM) renders in the EDK2 UI with variables persisted in the
+  SMMSTORE flash region. The build defines are tuned for Broadwell — most
+  notably `CPU_TIMER_LIB_ENABLE=FALSE` (no CPUID 15h crystal clock on
+  Broadwell), SMMSTORE-backed variables, Secure Boot support (setup mode
+  until keys are enrolled), serial off/cbmem console on (no UART routed on
+  this board), and the payload TCG stack off (the PTT fTPM's CRB lives at a
+  non-standard address; the OS gets it via the board's ACPI TPM2 table).
 - `linuxboot`: `linux-linuxboot` (6.12 LTS, minimal fragment) + `u-root`
   (core+boot commands) as a kexec-style bootloader.
 

@@ -1,6 +1,9 @@
-# kas configuration for the standalone NUC5i7RYH BIOS build
-# Usage: kas build kas.yml           -> deploys coreboot-nuc5i7ryh.rom under
-#        build/tmp/deploy/images/nuc5i7ryh/
+# kas configuration for the NUC UEFI-driver build.
+# Usage: kas build kas.yml   -> builds standalone UEFI .efi drivers under
+#        build/tmp/deploy/images/nuc5i7ryh/efi-drivers/
+# These are loaded on the NUC's stock (locked) BIOS from a USB/FAT volume via a
+# Driver#### load option (efibootmgr --driver) -- they are NOT flashed into
+# firmware. See README.md.
 # Install kas: pip3 install kas
 
 header:
@@ -8,7 +11,7 @@ header:
 
 machine: nuc5i7ryh
 distro: poky
-target: coreboot
+target: edk2-efi-drivers
 
 build_system: openembedded
 
@@ -20,21 +23,6 @@ repos:
       meta:
       meta-poky:
 
-  # flashrom + pciutils for the flasher live ISO (meta-oe).
-  meta-openembedded:
-    url: https://git.openembedded.org/meta-openembedded
-    branch: scarthgap
-    layers:
-      meta-oe:
-
-  # intel-corei7-64 machine (real-hardware BSP: i915/e1000e/ahci/xhci) used by
-  # the flasher multiconfig to build a bootable live ISO for the NUC.
-  meta-intel:
-    url: https://git.yoctoproject.org/meta-intel
-    branch: scarthgap
-    layers:
-      .:
-
   # Local layer (inside this repo)
   meta-nuc-bios:
     path: meta-nuc-bios
@@ -43,30 +31,11 @@ repos:
 
 local_conf_header:
   nuc-bios: |
-    # NUC5i7RYH BIOS build configuration
     MACHINE = "nuc5i7ryh"
     DISTRO = "poky"
-    # Parallel build tuning
     BB_NUMBER_THREADS = "${@oe.utils.cpu_count()}"
     PARALLEL_MAKE = "-j ${@oe.utils.cpu_count()}"
-    # Shared download and sstate directories (can be overridden per user)
-    # DL_DIR = "${TOPDIR}/downloads"
-    # SSTATE_DIR = "${TOPDIR}/sstate-cache"
-    # Disable interactive prompts
     CONNECTIVITY_CHECK_URIS = ""
-    # Payload for the coreboot ROM: "edk2" (UefiPayloadPkg, default) or
-    # "linuxboot" (linux-linuxboot bzImage + u-root initramfs, built here).
-    NUC_BIOS_PAYLOAD = "edk2"
-    # Second multiconfig (conf/multiconfig/flasher.conf) builds a bootable
-    # intel-corei7-64 live ISO carrying flashrom + the coreboot ROM. Build it
-    # with:  kas build kas-flasher.yml   (or bitbake mc:flasher:nuc-flasher-image)
-    BBMULTICONFIG = "flasher"
-    # Broadwell memory-init blobs (mrc.bin + refcode.elf) are extracted at
-    # build time from a pinned public donor image (MrChromebox samus) by
-    # default. Uncomment to supply your own pair instead, or set
-    # COREBOOT_USE_DONOR_BLOBS = "0" for a blob-less compile check -- see
-    # meta-nuc-bios/recipes-bsp/coreboot/files/blobs/README.md.
-    #COREBOOT_BLOBS_DIR = "/path/to/blobs"
-    # Shared download and sstate directories (can be overridden per user)
+    # Shared download and sstate directories (override per user if desired).
     DL_DIR = "/opt/yocto/downloads"
     SSTATE_DIR = "/opt/yocto/sstate-cache"

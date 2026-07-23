@@ -10,23 +10,15 @@ cscope.out
 build/
 downloads/
 sstate-cache/
-*.rom
+*.efi
 *.img
-*.wic
-*.wic.xz
 
 # Upstream layers fetched by kas
 poky/
 meta-openembedded/
 meta-intel/
 
-# Intel memory-init blobs are user-supplied and must never be committed
-# (see meta-nuc-bios/recipes-bsp/coreboot/files/blobs/README.md)
-meta-nuc-bios/recipes-bsp/coreboot/files/blobs/*
-!meta-nuc-bios/recipes-bsp/coreboot/files/blobs/README.md
-
 # local build log
 kas-build.log
-kas-flasher.log
 kas-parse.log
 kas-graph.log

@@ -73,6 +73,22 @@ do_configure[noexec] = "1"
 #   full-screen setup           ConOut PCDs at 0 = use the whole libgfxinit
 #                               framebuffer (coreboot EDK2_FULL_SCREEN_SETUP
 #                               default y).
+#   NETWORK_ENABLE=TRUE         pulls in NetworkPkg -- SnpDxe/MnpDxe/ARP/
+#                               Ip4/Udp4/Mtftp4/Dhcp4 and UefiPxeBcDxe (the
+#                               PXE Base Code) for classic IPv4 TFTP netboot.
+#                               SNP_ENABLE builds the generic SNP-over-UNDI
+#                               shim so a NIC UNDI/option ROM is bridged to
+#                               the SNP the PXE BC consumes. NB: this stack
+#                               alone finds NO nic on this board -- the I218-V
+#                               (8086:15a1) has no EDK2 driver, so no PXE boot
+#                               option appears until a NIC driver is supplied
+#                               (iPXE .efirom in coreboot CBFS, tracked
+#                               separately). TLS + HTTP_BOOT stay off (they
+#                               drag in OpenSSL, ~1 MB+, and PXE needs
+#                               neither); flip both on later for HTTPS/HTTP
+#                               boot -- that same TLS+HTTP path is what an EDK2
+#                               Redfish RestEx client would ride on. IP6 and
+#                               iSCSI off to keep the FV lean.
 EDK2_BUILD_FLAGS = " \
     -D BOOTLOADER=COREBOOT \
     -D BUILD_ARCH=X64 \
@@ -86,6 +102,14 @@ EDK2_BUILD_FLAGS = " \
     -D SECURE_BOOT_ENABLE=TRUE \
     -D TPM_ENABLE=FALSE \
     -D SD_MMC_TIMEOUT=10000 \
+    -D NETWORK_ENABLE=TRUE \
+    -D NETWORK_SNP_ENABLE=TRUE \
+    -D NETWORK_IP4_ENABLE=TRUE \
+    -D NETWORK_IP6_ENABLE=FALSE \
+    -D NETWORK_TLS_ENABLE=FALSE \
+    -D NETWORK_HTTP_BOOT_ENABLE=FALSE \
+    -D NETWORK_ISCSI_ENABLE=FALSE \
+    -D NETWORK_ALLOW_HTTP_CONNECTIONS=TRUE \
     --pcd gEfiMdeModulePkgTokenSpaceGuid.PcdMaxVariableSize=0x8000 \
     --pcd gEfiMdePkgTokenSpaceGuid.PcdPciExpressBaseAddress=0xF0000000 \
     --pcd gEfiMdePkgTokenSpaceGuid.PcdPciExpressBaseSize=0x4000000 \

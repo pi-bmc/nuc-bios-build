@@ -93,6 +93,20 @@ COREBOOT_BLOBS_DIR ??= ""
 COREBOOT_USE_DONOR_BLOBS ??= "1"
 COREBOOT_REFCODE_GBE_PATCH ??= "1"
 
+# UEFI PXE for the onboard I218-V: add iPXE's UEFI option ROM (built by the
+# ipxe-efirom recipe) to CBFS as pci<vid>,<did>.rom via CONFIG_PXE_ROM, so
+# UefiPayloadPkg dispatches it and the payload's NetworkPkg stack
+# (NETWORK_ENABLE in edk2-uefipayload) gets an SNP to drive. Set
+# COREBOOT_ENABLE_PXE=0 to omit it. The PCI id must match the .efirom the
+# ipxe-efirom recipe built (IPXE_VID/IPXE_DID there) -- confirm with lspci on
+# the NUC. NB: only meaningful with the refcode GbE-enable patch on (above),
+# else there is no NIC. Whether UefiPayloadPkg actually dispatches a CBFS
+# option ROM for this non-VGA LOM is the one thing to confirm on hardware; if
+# not, the fallback is bundling the driver as an FFS in the payload FV.
+COREBOOT_ENABLE_PXE ??= "1"
+COREBOOT_PXE_ROM_ID ??= "8086,15a1"
+COREBOOT_PXE_EFIROM ??= "808615a1.efirom"
+
 BLOBS_DEST = "${S}/3rdparty/blobs/mainboard/intel/nuc5i5ryb"
 
 do_configure() {
@@ -133,7 +147,24 @@ EOF
     else
         bbwarn "coreboot: no blobs (COREBOOT_USE_DONOR_BLOBS=0, COREBOOT_BLOBS_DIR unset) -- building the CI-style blob-less ROM; it will NOT boot the NUC."
     fi
+
+    # iPXE UEFI option ROM -> CBFS as pci<id>.rom. CONFIG_PXE + CONFIG_PXE_ROM
+    # (use an existing image, not BUILD_IPXE) tells coreboot to add the
+    # prebuilt .efirom the ipxe-efirom recipe deployed. The absolute
+    # DEPLOY_DIR_IMAGE path is what payloads/external/iPXE/Makefile copies in.
+    if [ "${COREBOOT_ENABLE_PXE}" = "1" ]; then
+        if [ ! -s "${DEPLOY_DIR_IMAGE}/${COREBOOT_PXE_EFIROM}" ]; then
+            bbfatal "COREBOOT_ENABLE_PXE=1 but ${DEPLOY_DIR_IMAGE}/${COREBOOT_PXE_EFIROM} is missing -- build ipxe-efirom first (do_configure[depends])."
+        fi
+        cat >> ${B}/.config <<EOF
+CONFIG_PXE=y
+CONFIG_PXE_ROM=y
+CONFIG_PXE_ROM_ID="${COREBOOT_PXE_ROM_ID}"
+CONFIG_PXE_ROM_FILE="${DEPLOY_DIR_IMAGE}/${COREBOOT_PXE_EFIROM}"
+EOF
+    fi
 }
+do_configure[vardeps] += "COREBOOT_ENABLE_PXE COREBOOT_PXE_ROM_ID COREBOOT_PXE_EFIROM"
 
 # Donor-blob extraction (mode 2), a standalone task so the blobs can be
 # produced and inspected without the multi-hour coreboot compile:
@@ -234,6 +265,10 @@ python () {
     else:
         d.appendVarFlag('do_compile', 'depends',
                         ' edk2-uefipayload:do_deploy')
+    # The iPXE .efirom must be deployed before do_configure -- it is both
+    # referenced (CONFIG_PXE_ROM_FILE) and existence-checked there.
+    if d.getVar('COREBOOT_ENABLE_PXE') == '1':
+        d.appendVarFlag('do_configure', 'depends', ' ipxe-efirom:do_deploy')
 }
 
 # Firmware is not target userspace: the ROM embeds its own everything.

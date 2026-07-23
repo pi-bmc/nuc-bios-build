@@ -1,0 +1,48 @@
+## @file
+# NucRedfishPkg - platform glue package for standalone EDK2 Redfish drivers
+# loaded on the NUC's stock BIOS via a Driver#### load option.
+#
+# Provides:
+#   * The AMI Setup formset variable GUID (gAmiSetupFormsetGuid) that the
+#     replacement RedfishPlatformConfig driver uses to read/write the stock
+#     firmware's "Setup" NV variable.
+#   * A token space for platform PCDs (e.g. the ECM gadget MAC).
+#
+# SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  DEC_SPECIFICATION = 0x0001001b
+  PACKAGE_NAME      = NucRedfishPkg
+  PACKAGE_GUID      = 8e9d1a20-3b6c-4f52-9a7e-1c0f2d3e4b50
+  PACKAGE_VERSION   = 1.0
+
+[Guids]
+  #
+  # Token space GUID for this package's PCDs.
+  #
+  gNucRedfishPkgTokenSpaceGuid = { 0x9f2c4d18, 0x6a3b, 0x4e7d, { 0xb1, 0x2c, 0x5d, 0x8e, 0x0f, 0x3a, 0x6b, 0x71 } }
+
+  #
+  # AMI Aptio "Setup" formset / variable GUID.
+  # The stock NUC (AMI Aptio) BIOS stores all its Setup Questions in a single
+  # non-volatile UEFI variable named L"Setup" tagged with this vendor GUID.
+  # RedfishConfigDriver reads/writes byte ranges of that variable to expose the
+  # firmware settings as Redfish BIOS attributes.
+  #
+  # TODO: 0xEC87D643... is the well-known AMI Setup GUID. CONFIRM it matches
+  #       this specific NUC5i7RYH firmware build (dump with `dmpstore -guid`
+  #       from the UEFI shell, or read AMITSE/Setup .sd sources) before relying
+  #       on the offsets in the RedfishConfigDriver map table.
+  #
+  gAmiSetupFormsetGuid = { 0xec87d643, 0xeba4, 0x4bb5, { 0xa1, 0xe5, 0x3f, 0x3e, 0x36, 0xb2, 0x0d, 0xa9 } }
+
+[PcdsFixedAtBuild]
+  #
+  # MAC address of the USB CDC-ECM gadget the BMC (NanoKVM/Pi) presents to the
+  # NUC. It MUST equal the real usb0 ECM gadget MAC and MUST also be encoded in
+  # gEfiRedfishPkgTokenSpaceGuid.PcdRedfishRestExServiceDevicePath in the DSC.
+  #
+  # TODO: replace the 06:00:00:00:00:01 placeholder with the real gadget MAC.
+  #
+  gNucRedfishPkgTokenSpaceGuid.PcdNucRedfishEcmMac|{0x06, 0x00, 0x00, 0x00, 0x00, 0x01}|VOID*|0x00000001

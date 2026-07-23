@@ -80,14 +80,18 @@ EFI_DRIVER_INFS ?= " \
     RedfishPkg/RedfishHttpDxe/RedfishHttpDxe.inf \
     RedfishPkg/RedfishConfigHandler/RedfishConfigHandlerDriver.inf \
     NucRedfishPkg/RedfishConfigDriver/RedfishConfigDriver.inf \
+    NucRedfishPkg/ConnectRedfishApp/ConnectRedfishApp.inf \
     RedfishClientPkg/RedfishFeatureCoreDxe/RedfishFeatureCoreDxe.inf \
     RedfishClientPkg/RedfishETagDxe/RedfishETagDxe.inf \
     RedfishClientPkg/RedfishConfigLangMapDxe/RedfishConfigLangMapDxe.inf \
-    RedfishClientPkg/HiiToRedfishBiosDxe/HiiToRedfishBiosDxe.inf \
+    RedfishClientPkg/HiiToRedfishBootDxe/HiiToRedfishBootDxe.inf \
     RedfishClientPkg/Features/Bios/v1_0_9/Dxe/BiosDxe.inf \
     RedfishClientPkg/Features/BiosAttributeRegistry/v1_3_6/BiosAttributeRegistryDxe.inf \
+    RedfishClientPkg/Features/BootOption/v1_0_4/Dxe/BootOptionDxe.inf \
+    RedfishClientPkg/Features/BootOptionCollection/BootOptionCollectionDxe.inf \
     RedfishClientPkg/Converter/Bios/v1_0_9/RedfishBios_V1_0_9_Dxe.inf \
     RedfishClientPkg/Converter/AttributeRegistry/v1_3_6/RedfishAttributeRegistry_V1_3_6_Dxe.inf \
+    RedfishClientPkg/Converter/BootOption/v1_0_4/RedfishBootOption_V1_0_4_Dxe.inf \
 "
 
 do_compile() {

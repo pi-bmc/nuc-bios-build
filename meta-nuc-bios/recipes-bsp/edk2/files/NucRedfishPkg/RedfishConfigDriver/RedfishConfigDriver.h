@@ -1,12 +1,22 @@
 /** @file
-  RedfishConfigDriver - drop-in replacement for RedfishPkg/RedfishPlatformConfigDxe
-  for a stock AMI Aptio BIOS.
+  RedfishConfigDriver - HYBRID EDKII_REDFISH_PLATFORM_CONFIG_PROTOCOL producer
+  for a stock AMI Aptio BIOS. Replaces RedfishPkg/RedfishPlatformConfigDxe.
 
-  Instead of walking HII/IFR (which the loadable-driver scaffold deliberately
-  avoids), this driver produces EDKII_REDFISH_PLATFORM_CONFIG_PROTOCOL backed by
-  a static map of Redfish attribute <-> offset within the AMI L"Setup" NV
-  variable (gAmiSetupFormsetGuid). The RedfishClientPkg BIOS feature driver
-  consumes this protocol to read/write firmware settings as Redfish attributes.
+  This driver serves two sources behind one config protocol:
+
+    1. AMI L"Setup" NV variable (gAmiSetupFormsetGuid): for every ConfigureLang
+       present in the static mAmiSetupMap[] table (the "Bios" schema attributes),
+       values are read/written by byte offset inside the L"Setup" variable. This
+       is the real BIOS source and needs no HII/IFR walking.
+
+    2. HII fallback via EFI_CONFIG_KEYWORD_HANDLER_PROTOCOL: for any (Schema,
+       ConfigureLang) NOT in the AMI table -- e.g. HiiToRedfishBootDxe's boot
+       form, whose questions carry x-UEFI-redfish config languages -- values are
+       served from the HII database using the config language as the keyword in
+       the "x-UEFI-redfish-<Schema>.<Version>" namespace.
+
+  The RedfishClientPkg feature drivers consume this protocol to read/write
+  firmware settings as Redfish attributes.
 
   SPDX-License-Identifier: BSD-2-Clause-Patent
 **/
@@ -25,6 +35,15 @@
 #include <Library/UefiLib.h>
 
 #include <Protocol/EdkIIRedfishPlatformConfig.h>
+#include <Protocol/HiiConfigKeyword.h>
+#include <Protocol/HiiDatabase.h>
+
+//
+// x-UEFI-redfish config-language namespace prefix (matches
+// RedfishPlatformConfigDxe's CONFIGURE_LANGUAGE_PREFIX). The full namespace is
+// "x-UEFI-redfish-<Schema>.<Version>", e.g. "x-UEFI-redfish-ComputerSystem.v1_5_0".
+//
+#define NUC_REDFISH_XUEFI_PREFIX  L"x-UEFI-redfish-"
 
 //
 // Name of the AMI Aptio Setup NV variable.

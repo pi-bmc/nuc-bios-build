@@ -40,6 +40,17 @@
 
 [Protocols]
   gEdkIIRedfishPlatformConfigProtocolGuid    ## PRODUCES
+  #
+  # HII fallback path (see RedfishConfigDriver.c): the Keyword Handler serves
+  # Get/Set for non-AMI x-UEFI-redfish config languages; the HII Database is
+  # walked by GetSupportedSchema to enumerate the served schemas. Both are
+  # produced by the platform HiiDatabaseDxe.
+  #
+  gEfiConfigKeywordHandlerProtocolGuid       ## CONSUMES
+  gEfiHiiDatabaseProtocolGuid                ## CONSUMES
 
 [Depex]
-  gEfiVariableArchProtocolGuid AND gEfiVariableWriteArchProtocolGuid
+  gEfiVariableArchProtocolGuid AND
+  gEfiVariableWriteArchProtocolGuid AND
+  gEfiConfigKeywordHandlerProtocolGuid AND
+  gEfiHiiDatabaseProtocolGuid

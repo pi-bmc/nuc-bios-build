@@ -52,6 +52,7 @@
   # Base libraries (union of RedfishPkg.dsc and RedfishClientPkg.dsc).
   #
   UefiDriverEntryPoint|MdePkg/Library/UefiDriverEntryPoint/UefiDriverEntryPoint.inf
+  UefiApplicationEntryPoint|MdePkg/Library/UefiApplicationEntryPoint/UefiApplicationEntryPoint.inf
   UefiBootServicesTableLib|MdePkg/Library/UefiBootServicesTableLib/UefiBootServicesTableLib.inf
   UefiLib|MdePkg/Library/UefiLib/UefiLib.inf
   UefiRuntimeServicesTableLib|MdePkg/Library/UefiRuntimeServicesTableLib/UefiRuntimeServicesTableLib.inf
@@ -124,8 +125,14 @@
   # Do not attempt the BMC bootstrap-credential (IPMI) handshake.
   gEfiRedfishPkgTokenSpaceGuid.PcdRedfishDisableBootstrapCredentialService|TRUE
 
-  # TODO: set to the BMC's real Redfish ServiceRoot UUID; all-zero = match any.
-  gEfiRedfishPkgTokenSpaceGuid.PcdRedfishServiceUuid|L"00000000-0000-0000-0000-000000000000"
+  # Redfish ServiceRoot UUID correlation. This is a DEPLOYMENT CONVENTION we
+  # define: the BMC's Redfish service MUST report the same UUID at /redfish/v1
+  # (its ServiceRoot "UUID" property) for discovery to correlate.
+  #   NOTE: nanokvm-app's ServiceRoot currently OMITS the UUID field
+  #   (server/service/redfish/service_root.go) -- add `UUID: <this value>` there,
+  #   OR fall back to all-zero ("00000000-...-000000000000") which matches any
+  #   service if you can't change the BMC. See files/NucRedfishPkg/README.md.
+  gEfiRedfishPkgTokenSpaceGuid.PcdRedfishServiceUuid|L"c1298dbc-7850-4ffb-85bf-a5e241c28125"
 
   #
   # Which NIC is the Redfish host interface: match by MAC address node.
@@ -153,6 +160,13 @@
   NucRedfishPkg/RedfishConfigDriver/RedfishConfigDriver.inf
 
   #
+  # One-shot UEFI application that recursively connects all controllers so the
+  # Driver####-loaded stack binds on a stock BIOS (run it after the drivers are
+  # registered; see README.md).
+  #
+  NucRedfishPkg/ConnectRedfishApp/ConnectRedfishApp.inf
+
+  #
   # ---- RedfishPkg core drivers (from RedfishComponents.dsc.inc, MINUS
   #      RedfishPlatformConfigDxe which RedfishConfigDriver replaces) ----
   #
@@ -177,8 +191,33 @@
   RedfishClientPkg/RedfishFeatureCoreDxe/RedfishFeatureCoreDxe.inf
   RedfishClientPkg/RedfishETagDxe/RedfishETagDxe.inf
   RedfishClientPkg/RedfishConfigLangMapDxe/RedfishConfigLangMapDxe.inf
-  RedfishClientPkg/HiiToRedfishBiosDxe/HiiToRedfishBiosDxe.inf
+  #
+  # NOTE: RedfishClientPkg/HiiToRedfishBiosDxe/HiiToRedfishBiosDxe.inf is
+  # intentionally OMITTED. It is an EXAMPLE driver that ships its own dummy
+  # HII/IFR varstore for the Bios schema; our RedfishConfigDriver is the real
+  # Bios attribute source (it reads/writes the AMI L"Setup" NV variable), so the
+  # demo would only publish a conflicting empty Bios form. Keep Features/Bios,
+  # BiosAttributeRegistry and Converter/Bios below -- those consume our config
+  # protocol and are the real BIOS sync path.
+  #
+  # Boot options: HiiToRedfishBootDxe publishes its own HII form (x-UEFI-redfish
+  # config languages) + reads real Boot#### via UefiBootManagerLib. It is
+  # HII-form based, so it needs a config-protocol producer that can serve HII
+  # questions. RedfishConfigDriver is now a HYBRID: AMI L"Setup" for the mapped
+  # Bios rows, EFI_CONFIG_KEYWORD_HANDLER_PROTOCOL fallback for everything else
+  # (the Boot form). See RedfishConfigDriver.c.
+  RedfishClientPkg/HiiToRedfishBootDxe/HiiToRedfishBootDxe.inf
   RedfishClientPkg/Features/Bios/v1_0_9/Dxe/BiosDxe.inf
   RedfishClientPkg/Features/BiosAttributeRegistry/v1_3_6/BiosAttributeRegistryDxe.inf
+  #
+  # Boot feature trio (mirrors the canonical RedfishClientComponents.dsc.inc;
+  # none of these three take per-component <LibraryClasses> overrides there).
+  # The library classes they pull in (BootOptionV1_0_4Lib, BootOptionCollectionLib,
+  # ConverterCommonLib, EdkIIRedfishResourceConfigLib, ...) are already resolved
+  # by the !include RedfishClientPkg/RedfishClientLibs.dsc.inc above.
+  #
+  RedfishClientPkg/Features/BootOption/v1_0_4/Dxe/BootOptionDxe.inf
+  RedfishClientPkg/Features/BootOptionCollection/BootOptionCollectionDxe.inf
   RedfishClientPkg/Converter/Bios/v1_0_9/RedfishBios_V1_0_9_Dxe.inf
   RedfishClientPkg/Converter/AttributeRegistry/v1_3_6/RedfishAttributeRegistry_V1_3_6_Dxe.inf
+  RedfishClientPkg/Converter/BootOption/v1_0_4/RedfishBootOption_V1_0_4_Dxe.inf

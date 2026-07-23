@@ -43,8 +43,9 @@ NUC_REDFISH_PKG_DIR = "${WORKDIR}"
 
 COMPATIBLE_MACHINE = "nuc5i7ryh"
 # nasm: X64 assembly in MdePkg/CryptoPkg lib instances. util-linux: libuuid
-# for BaseTools. (No acpica/iasl -- these drivers carry no ACPI .asl.)
-DEPENDS = "nasm-native util-linux-native"
+# for BaseTools. mtools+dosfstools: build the FAT driver .img in do_deploy
+# (rootless mkfs.vfat + mcopy). (No acpica/iasl -- these drivers carry no ACPI .asl.)
+DEPENDS = "nasm-native util-linux-native mtools-native dosfstools-native"
 INHIBIT_DEFAULT_DEPS = "1"
 do_configure[noexec] = "1"
 
@@ -138,10 +139,28 @@ do_deploy() {
             bbfatal "no .efi produced for $inf -- check the build log"
         fi
     done
-    # Manifest for the USB staging step.
+    # Manifest for the USB staging step (drivers only -- filtered to *.efi).
     ( cd ${DEPLOYDIR}/efi-drivers && for f in *.efi; do
         printf '%s  %s\n' "$(sha256sum "$f" | cut -d" " -f1)" "$f"; done ) \
         > ${DEPLOYDIR}/efi-drivers/SHA256SUMS
+
+    # Ship the deployment kit (bcfg installer + Linux staging helper + runbook)
+    # next to the .efi so the harvested dir is turnkey. Sourced from
+    # files/NucRedfishPkg/deploy (staged to WORKDIR by the NucRedfishPkg fetch).
+    DEPLOY_KIT="${WORKDIR}/NucRedfishPkg/deploy"
+    for f in install-drivers.nsh README.md; do
+        [ -f "${DEPLOY_KIT}/$f" ] && install -m 0644 "${DEPLOY_KIT}/$f" ${DEPLOYDIR}/efi-drivers/ || true
+    done
+    for f in stage-usb.sh make-img.sh; do
+        [ -f "${DEPLOY_KIT}/$f" ] && install -m 0755 "${DEPLOY_KIT}/$f" ${DEPLOYDIR}/efi-drivers/ || true
+    done
+
+    # Build the ready-to-dd / virtual-media FAT image: drivers at \EFI\BOOT\drivers\.
+    if [ -x "${DEPLOY_KIT}/make-img.sh" ]; then
+        "${DEPLOY_KIT}/make-img.sh" \
+            -o ${DEPLOYDIR}/efi-drivers/nuc-redfish-drivers.img \
+            -s ${DEPLOYDIR}/efi-drivers
+    fi
 }
 
 addtask deploy after do_compile

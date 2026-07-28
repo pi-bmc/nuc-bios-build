@@ -39,11 +39,16 @@ DEPENDS = ""
 
 do_configure[noexec] = "1"
 
-# Target NIC. Override if lspci on the NUC reports a different I218 variant
-# (iPXE also carries 8086:1559 / 15a2 / 15a3). IPXE_ROM_FILE is the iPXE
-# make target: concatenated vendor+device, no separator.
+# Target NIC. CONFIRMED ON HARDWARE 2026-07-28: the UEFI shell's `pci` on this
+# unit reports 00:19.0 Ethernet controller = 8086:15A3, i.e. iPXE's "i218v-3"
+#     PCI_ROM ( 0x8086, 0x15a3, "i218v-3", "I218-V", INTEL_NO_PHY_RST )
+# NOT the 15a1 ("i218v-2") this recipe originally guessed. PciBusDxe matches
+# option ROMs by PCI id, so a 15a1 ROM is simply never dispatched for a 15a3
+# device -- the ROM lands in CBFS, nothing loads it, no SNP is produced and no
+# PXE boot option ever appears. COREBOOT_PXE_ROM_ID/COREBOOT_PXE_EFIROM in the
+# coreboot recipe must stay in step with this.
 IPXE_VID ??= "8086"
-IPXE_DID ??= "15a1"
+IPXE_DID ??= "15a3"
 IPXE_ROM_FILE = "${IPXE_VID}${IPXE_DID}.efirom"
 
 # iPXE source is fully vendored; no submodule fetch, so no network at compile.

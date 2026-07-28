@@ -89,6 +89,18 @@ do_configure[noexec] = "1"
 #                               boot -- that same TLS+HTTP path is what an EDK2
 #                               Redfish RestEx client would ride on. IP6 and
 #                               iSCSI off to keep the FV lean.
+#   LOAD_OPTION_ROMS=TRUE       UefiPayloadPkg.dsc defaults this to FALSE, i.e.
+#                               the payload does NOT execute PCI expansion
+#                               ROMs. Without it the iPXE .efirom that coreboot
+#                               places in CBFS as pci<vid>,<did>.rom is never
+#                               dispatched no matter how correct its PCI id is
+#                               -- no SNP is produced and no PXE boot option
+#                               can appear. The I218-V has no native EDK2
+#                               driver, so that option ROM is the only route to
+#                               an SNP on this board. coreboot exposes the same
+#                               switch as CONFIG_EDK2_LOAD_OPTION_ROMS (also
+#                               default n), which does not help: the payload is
+#                               built here, not by coreboot's edk2 machinery.
 EDK2_BUILD_FLAGS = " \
     -D BOOTLOADER=COREBOOT \
     -D BUILD_ARCH=X64 \
@@ -102,6 +114,7 @@ EDK2_BUILD_FLAGS = " \
     -D SECURE_BOOT_ENABLE=TRUE \
     -D TPM_ENABLE=FALSE \
     -D SD_MMC_TIMEOUT=10000 \
+    -D LOAD_OPTION_ROMS=TRUE \
     -D NETWORK_ENABLE=TRUE \
     -D NETWORK_SNP_ENABLE=TRUE \
     -D NETWORK_IP4_ENABLE=TRUE \

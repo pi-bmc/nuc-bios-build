@@ -62,11 +62,13 @@ HDMI/mDP, I218-V/NVMe/USB3/S3 work, PTT fTPM exposed). Payload options
 
 Broadwell has no native raminit; a bootable ROM needs Intel's `mrc.bin` +
 `refcode.elf`. By default the coreboot recipe extracts both at build time
-from a pinned public donor image (MrChromebox's samus/Chromebook-Pixel-2015
-build — same Broadwell-U silicon) using the in-tree cbfstool, and applies a
-pattern-guarded one-byte refcode patch so the refcode doesn't disable the
-NUC's I218-V GbE (the blob hardcodes GbE-enable to 0). The blobs can be
-produced and inspected without the multi-hour coreboot compile:
+from a pinned public donor image (MrChromebox's build for google/tidus, the
+Lenovo ThinkCentre Chromebox — Broadwell with socketed DDR3L SO-DIMMs like
+this board, and its refcode is byte-identical to the one Purism ships for the
+Librem 13 v1) using the in-tree cbfstool, and applies a pattern-guarded
+one-byte refcode patch so the refcode doesn't disable the NUC's I218-V GbE
+(the blob hardcodes GbE-enable to 0). The blobs can be produced and inspected
+without the multi-hour coreboot compile:
 
 ```sh
 kas shell kas.yml -c 'bitbake coreboot -c extract_blobs'
@@ -80,11 +82,23 @@ Full story:
 
 ## Flashing
 
-The Rock Canyon SPI controller is unlocked; from Linux on the NUC:
+**The first flash needs an external SOIC-8 programmer.** The stock BIOS
+(`RYBDWi35.86A.0386`) sets `BLE` + `SMM_BWP` + `FLOCKDN` (`BIOS_CNTL` = `0x2a`),
+so `flashrom -p internal` cannot write the chip — and the BIOS-security jumper
+only grants the descriptor override, not `SMM_BWP`. Clip-on procedure, hardware
+caveats and helper scripts: [docs/external-flashing.md](docs/external-flashing.md).
 
 ```sh
-flashrom  -p internal -r stock.rom                    # backup first!
-flashprog -p internal --ifd -i bios -w coreboot-nuc5i7ryh.rom
+./scripts/nuc-spi.sh dump stock-bios.rom   # two verified reads, keep this
+./scripts/nuc-spi.sh flash stock-bios.rom  # BIOS region only, via CH341A
+```
+
+Once coreboot is running the lock bits are gone and updates are done in-band,
+from Linux on the NUC:
+
+```sh
+flashrom -p internal -r stock.rom                    # backup first!
+flashrom -p internal --ifd -i bios -w coreboot-nuc5i7ryh.rom
 ```
 
 Only the 6 MiB BIOS region is written; the factory descriptor/GbE/ME regions
@@ -94,6 +108,9 @@ clip. Keep the BIOS-security jumper in normal mode — the port's PTT fTPM
 needs the ME running.
 
 ## Flasher live ISO (flash remotely over the JetKVM)
+
+Useful for updates once coreboot is in — it uses the internal programmer, so it
+cannot perform the initial flash past the stock BIOS's `SMM_BWP`.
 
 To flash without a local shell, build a self-contained bootable ISO that
 carries `flashrom`, the coreboot ROM, and helper scripts — attach it to the

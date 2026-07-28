@@ -5,6 +5,7 @@
 cscope.out
 .vscode-ctags
 *.tar.gz
+__pycache__/
 
 # Yocto build artifacts
 build/
@@ -30,3 +31,6 @@ kas-build.log
 kas-flasher.log
 kas-parse.log
 kas-graph.log
+
+# Machine-derived blobs recovered from a factory dump (scripts/extract-vbt.py)
+blobs/

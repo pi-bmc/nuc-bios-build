@@ -67,6 +67,11 @@ local_conf_header:
     # COREBOOT_USE_DONOR_BLOBS = "0" for a blob-less compile check -- see
     # meta-nuc-bios/recipes-bsp/coreboot/files/blobs/README.md.
     #COREBOOT_BLOBS_DIR = "/path/to/blobs"
+    # Real VBT recovered from this machine's factory BIOS dump; the vendored
+    # board patch ships data.vbt as an empty file (Gerrit's /patch endpoint
+    # emits no binary content). Regenerate with:
+    #   ./scripts/extract-vbt.py stock-bios.rom blobs/data.vbt
+    COREBOOT_VBT_FILE = "${TOPDIR}/../blobs/data.vbt"
     # Shared download and sstate directories (can be overridden per user)
     DL_DIR = "/opt/yocto/downloads"
     SSTATE_DIR = "/opt/yocto/sstate-cache"

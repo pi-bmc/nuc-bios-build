@@ -33,14 +33,33 @@ SRC_URI = "${COREBOOT_GIT_URI} \
            "
 
 # Donor image for the Broadwell memory-init blobs: MrChromebox's public
-# coreboot+edk2 build for google/samus (Chromebook Pixel 2015, same
-# Broadwell-U/Wildcat Point-LP silicon). mrc.bin and fallback/refcode are
-# extracted from its CBFS at build time with the in-tree cbfstool -- verified
-# locally: mrc.bin 222876 B (type mrc), refcode 177472 B decompressed. The
-# .rom is not an archive; unpack=0 leaves it in WORKDIR.
-COREBOOT_DONOR_ROM = "coreboot_edk2-samus-mrchromebox_20260714.rom"
+# coreboot+edk2 build for google/tidus (Lenovo ThinkCentre Chromebox).
+# mrc.bin and fallback/refcode are extracted from its CBFS at build time with
+# the in-tree cbfstool. The .rom is not an archive; unpack=0 leaves it in
+# WORKDIR.
+#
+# WHY tidus and not samus (which this recipe used until 2026-07-28): samus is
+# the Chromebook Pixel 2015, whose memory is SOLDERED LPDDR3. This NUC has two
+# socketed DDR3L SO-DIMM slots, and tidus is a Broadwell *desktop* Chromebox
+# with socketed DDR3L -- the same topology. The blobs are genuinely different
+# builds, not just different packaging:
+#
+#     mrc.bin      samus 222876 B   tidus 223640 B
+#     refcode.elf  samus 192440 B   tidus 192624 B
+#
+# Two independent checks say tidus is the blob pair the Broadwell world
+# actually standardises on:
+#   1. tidus refcode.elf sha1 e3f985d23199a4bd8ec317beae3dd90ce5dfa3cc is a
+#      byte-for-byte match for the refcode Purism ships for the Librem 13 v1
+#      (REFCODE_SHA1 in purism-librem-coreboot-updater.sh -- which sources it
+#      from a tidus ChromeOS recovery image, not from a Librem ROM).
+#   2. Its GbE-disable instruction sits at file offset 131253 (0x200b5) --
+#      exactly the offset Documentation/soc/intel/broadwell/blobs.md quotes for
+#      the Librem 13 v1 refcode. The samus copy is at 0x1fff1 instead, which is
+#      why the patch below matches by byte pattern rather than fixed offset.
+COREBOOT_DONOR_ROM = "coreboot_edk2-tidus-mrchromebox_20260714.rom"
 SRC_URI += "https://www.mrchromebox.tech/files/firmware/full_rom/MrChromebox-2606.1/${COREBOOT_DONOR_ROM};name=donor;unpack=0"
-SRC_URI[donor.sha256sum] = "7f287b55c0fad06f28d46dcff432a5414045b0fdd4b3df431385e94848c9357d"
+SRC_URI[donor.sha256sum] = "382bd654e2191369bae75302e70283e50ac2d8d27fe6a55e8c2b365520713eca"
 
 S = "${WORKDIR}/git"
 B = "${S}"
@@ -72,7 +91,7 @@ NUC_BIOS_PAYLOAD ??= "edk2"
 #   1. COREBOOT_BLOBS_DIR set        -- use the user-supplied pair (e.g.
 #      extracted from a different donor; see files/blobs/README.md).
 #   2. COREBOOT_USE_DONOR_BLOBS = 1  -- (default) extract both from the
-#      pinned MrChromebox samus image above with the in-tree cbfstool.
+#      pinned MrChromebox tidus image above with the in-tree cbfstool.
 #   3. COREBOOT_USE_DONOR_BLOBS = 0  -- blob-less CI-style compile check;
 #      the ROM links but DOES NOT BOOT and is marked .NOT-BOOTABLE.
 #
@@ -80,18 +99,29 @@ NUC_BIOS_PAYLOAD ??= "edk2"
 # (movb $0x0,0x37e(%ebx)); without intervention it disables the PCH GbE MAC
 # and the OS never sees the I218-V (Documentation/soc/intel/broadwell/
 # blobs.md, and nothing in coreboot's own Broadwell code re-enables it).
-# The docs' fix is a one-byte patch, but their file offset (131253) is only
-# valid for the exact Librem 13 v1 refcode binary -- the samus-extracted one
-# is a different build (same instruction sequence, shifted ~0x1cc). So the
-# patch here locates the documented instruction by byte pattern, requires it
-# to be unique, and flips the immediate to 1. Verified against the pinned
-# donor: one hit, byte 0x00 at file offset 0x1fff1. Setting enable=1 is what
+# The docs' fix is a one-byte patch at a fixed file offset (131253), which is
+# only valid for one exact refcode build. The patch here instead locates the
+# documented instruction by byte pattern, requires it to be unique, and flips
+# the immediate to 1 -- so it survives a donor change. Verified against both
+# donors: exactly one hit each, byte 0x00 at 0x200b5 (tidus, == the docs'
+# 131253) and at 0x1fff1 (samus). Setting enable=1 is what
 # a GbE-equipped board wants regardless (the Gerrit 94032 port reports the
 # I218-V working, with unstated blob provenance -- if that was ever true
 # unpatched, enabling is still correct, merely redundant).
 COREBOOT_BLOBS_DIR ??= ""
 COREBOOT_USE_DONOR_BLOBS ??= "1"
 COREBOOT_REFCODE_GBE_PATCH ??= "1"
+
+# Video BIOS Table. The vendored board patch carries data.vbt as a bare
+# "Binary files differ" stanza -- Gerrit's /patch endpoint does not emit GIT
+# binary patches -- so it applies as a ZERO-LENGTH file and coreboot adds an
+# empty vbt.bin to CBFS. libgfxinit does its own native init and does not read
+# the VBT, but Linux's i915 pulls it from the ACPI opregion to learn the
+# board's port/encoder mapping, so an empty one is a latent defect. Recover a
+# real table from a factory dump and point this at it:
+#     ./scripts/extract-vbt.py stock-bios.rom blobs/data.vbt
+# Left unset, the build still completes and warns.
+COREBOOT_VBT_FILE ??= ""
 
 # UEFI PXE for the onboard I218-V: add iPXE's UEFI option ROM (built by the
 # ipxe-efirom recipe) to CBFS as pci<vid>,<did>.rom via CONFIG_PXE_ROM, so
@@ -103,9 +133,12 @@ COREBOOT_REFCODE_GBE_PATCH ??= "1"
 # else there is no NIC. Whether UefiPayloadPkg actually dispatches a CBFS
 # option ROM for this non-VGA LOM is the one thing to confirm on hardware; if
 # not, the fallback is bundling the driver as an FFS in the payload FV.
+# 8086:15a3 CONFIRMED on this unit via the UEFI shell's `pci` (00:19.0). The
+# original 8086,15a1 guess meant PciBusDxe never matched the option ROM to the
+# device, so no SNP and no PXE. Keep in step with IPXE_DID in ipxe-efirom.
 COREBOOT_ENABLE_PXE ??= "1"
-COREBOOT_PXE_ROM_ID ??= "8086,15a1"
-COREBOOT_PXE_EFIROM ??= "808615a1.efirom"
+COREBOOT_PXE_ROM_ID ??= "8086,15a3"
+COREBOOT_PXE_EFIROM ??= "808615a3.efirom"
 
 BLOBS_DEST = "${S}/3rdparty/blobs/mainboard/intel/nuc5i5ryb"
 
@@ -131,6 +164,16 @@ do_configure() {
         install -d ${BLOBS_DEST}
         install -m 0644 ${COREBOOT_BLOBS_DIR}/mrc.bin ${BLOBS_DEST}/mrc.bin
         install -m 0644 ${COREBOOT_BLOBS_DIR}/refcode.elf ${BLOBS_DEST}/refcode.elf
+    fi
+
+    if [ -n "${COREBOOT_VBT_FILE}" ]; then
+        [ -s "${COREBOOT_VBT_FILE}" ] || \
+            bbfatal "COREBOOT_VBT_FILE is set to ${COREBOOT_VBT_FILE} but that file is missing or empty"
+        install -m 0644 "${COREBOOT_VBT_FILE}" \
+            ${S}/src/mainboard/intel/nuc5i5ryb/data.vbt
+        bbnote "VBT: installed $(stat -c %s ${COREBOOT_VBT_FILE}) bytes from ${COREBOOT_VBT_FILE}"
+    elif [ ! -s ${S}/src/mainboard/intel/nuc5i5ryb/data.vbt ]; then
+        bbwarn "data.vbt is empty (the vendored patch carries no binary content) -- CBFS will get a zero-length vbt.bin and Linux i915 will find no VBT. Extract one with scripts/extract-vbt.py and set COREBOOT_VBT_FILE."
     fi
 
     if [ -n "${COREBOOT_BLOBS_DIR}" ] || [ "${COREBOOT_USE_DONOR_BLOBS}" = "1" ]; then
@@ -164,7 +207,7 @@ CONFIG_PXE_ROM_FILE="${DEPLOY_DIR_IMAGE}/${COREBOOT_PXE_EFIROM}"
 EOF
     fi
 }
-do_configure[vardeps] += "COREBOOT_ENABLE_PXE COREBOOT_PXE_ROM_ID COREBOOT_PXE_EFIROM"
+do_configure[vardeps] += "COREBOOT_ENABLE_PXE COREBOOT_PXE_ROM_ID COREBOOT_PXE_EFIROM COREBOOT_VBT_FILE"
 
 # Donor-blob extraction (mode 2), a standalone task so the blobs can be
 # produced and inspected without the multi-hour coreboot compile:

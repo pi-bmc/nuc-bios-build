@@ -83,10 +83,16 @@ chip northbridge/intel/broadwell
 					device pnp 4e.9 off end		# GPIO 1234567
 					# ACPI block. Holds CR E4h[6:5] (AC-loss power policy,
 					# programmed in bootblock.c) and E0h/E6h (S5 wake and
-					# power state, programmed in smihandler.c). Left "on" so
-					# ramstage's pnp_enable() does not write CR 30 = 0 and
-					# deactivate the very logical device those registers live
-					# in -- suspected of defeating auto-power-on after AC loss.
+					# power state, programmed in smihandler.c).
+					#
+					# on/off is cosmetic here: measured on hardware
+					# 2026-07-28, LDN 0x0A has NO activate register -- CR 30
+					# reads 0xFF (unimplemented) while LDN 0x0B's CR 30 reads
+					# 0x01 through the identical access path. So ramstage's
+					# pnp_enable() write of CR 30 = 0 was always discarded and
+					# never gated the PSON# state machine. Kept "on" only so
+					# the tree states the intent honestly.
+					#
 					# Deliberately NO "irq 0xNN = ..." entries: peers program
 					# E4h/E6h from devicetree, but here they are owned by
 					# bootblock.c/smihandler.c and a devicetree write would

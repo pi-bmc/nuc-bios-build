@@ -20,7 +20,6 @@ config BOARD_SPECIFIC_OPTIONS
 	select DRIVERS_EFI_VARIABLE_STORE
 	select DRIVERS_OPTION_CFR_ENABLED
 	select POWER_STATE_DEFAULT_ON_AFTER_FAILURE	# server: auto power-on after AC loss
-	select MEMORY_MAPPED_TPM
 	select INTEL_GMA_HAVE_VBT
 	select INTEL_INT15
 	select SOC_INTEL_BROADWELL
@@ -30,8 +29,8 @@ config BOARD_SPECIFIC_OPTIONS
 	select NO_UART_ON_SUPERIO
 	select HAVE_IFD_BIN
 	select HAVE_ME_BIN
-    select HAVE_MRC
-    select HAVE_REFCODE_BLOB
+	select HAVE_MRC
+	select HAVE_REFCODE_BLOB
 	select UNLOCK_FLASH_REGIONS
 	# NOT SOC_INTEL_COMMON_BLOCK_HDA*: those live under soc/intel/common/block
 	# and depend on SOC_INTEL_COMMON, which is n for this pre-FSP generation
@@ -43,6 +42,22 @@ config BOARD_SPECIFIC_OPTIONS
 
 config VBOOT
 	select VBOOT_VBNV_CMOS
+
+config TPM2_PTT_ACPI_START
+	bool "Intel PTT firmware-TPM 2.0 (ACPI Start Method 2)"
+	default y
+	help
+	  Expose the ME's PTT firmware-TPM 2.0 to the OS via a board-supplied
+	  TPM2 ACPI table (Start Method 2) and the \_SB.TPM device. This silicon
+	  has no CRB at the standard 0xfed40000; the ME CRB is at 0xfed70000
+	  (see acpi/tpm.asl + ptt.c). Runtime-toggleable via the CFR "tpm_enable"
+	  option.
+
+	  Do not drop this symbol: Makefile.mk gates ptt.c on it and mainboard.c
+	  installs ptt_write_tpm2_table() under CONFIG(TPM2_PTT_ACPI_START). With
+	  the symbol absent both silently compile to nothing -- verified on
+	  hardware 2026-07-28 as "no TPM2 in /sys/firmware/acpi/tables, no
+	  /dev/tpm0, zero PTT lines in the coreboot log".
 
 config MAINBOARD_DIR
 	default "intel/nuc5i5ryb"
@@ -63,10 +78,7 @@ config IFD_BIN_PATH
 	default "3rdparty/blobs/mainboard/\$(MAINBOARDDIR)/descriptor.bin"
 
 config ME_BIN_PATH
-    default "3rdparty/blobs/mainboard/\$(MAINBOARDDIR)/me.bin"
-
-config REFCODE_BLOB_FILE
-	default "3rdparty/blobs/mainboard/\$(MAINBOARDDIR)/refcode.elf"
+	default "3rdparty/blobs/mainboard/\$(MAINBOARDDIR)/me.bin"
 
 config MRC_FILE
 	default "3rdparty/blobs/mainboard/\$(MAINBOARDDIR)/mrc.bin"

@@ -119,6 +119,28 @@ static void ptt_setup(void) {
   write32((void *)(PTT_CRB_BASE + CRB_CTRL_RSP_PA_LO), PTT_CRB_DATA);
   write32((void *)(PTT_CRB_BASE + CRB_CTRL_RSP_PA_HI), 0);
 
+  /*
+   * The 0xffffffff test above only catches an undecoded window. A window that
+   * is decoded but has nothing behind it reads back as all-zeros and swallows
+   * writes -- which is exactly what this board does (measured 2026-07-28: the
+   * entire 64-byte control area reads 0x00000000 and the writes above do not
+   * stick). Publishing a TPM2 table for that is worse than publishing none:
+   * Linux binds MSFT0101, reads cmd_pa/cmd_size back as 0, and fails with
+   *   tpm_crb MSFT0101:00: error -EBUSY: can't request region for resource
+   *   [mem 0x00000000-0xffffffffffffffff]
+   * So require the control area to actually accept a write before claiming an
+   * fTPM exists. A real CRB retains CMD_SIZE; a dead window does not.
+   */
+  if (read32((void *)(PTT_CRB_BASE + CRB_CTRL_CMD_SIZE)) != PTT_CRB_DATA_SIZE) {
+    printk(BIOS_WARNING,
+           "PTT: CRB 0x%x decoded but inert (CMD_SIZE read back 0x%x, wrote "
+           "0x%x); no fTPM on this silicon, not publishing TPM2\n",
+           PTT_CRB_BASE,
+           read32((void *)(PTT_CRB_BASE + CRB_CTRL_CMD_SIZE)),
+           PTT_CRB_DATA_SIZE);
+    return;
+  }
+
   ptt_enabled = true;
   printk(BIOS_DEBUG, "PTT: CRB @0x%x ready (HSTS 0x%x), data buffer @0x%x\n",
          PTT_CRB_BASE, read32((void *)(PTT_CRB_BASE + CRB_HSTS)), PTT_CRB_DATA);

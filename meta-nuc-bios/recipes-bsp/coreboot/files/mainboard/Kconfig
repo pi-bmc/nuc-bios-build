@@ -8,6 +8,10 @@ config BOARD_SPECIFIC_OPTIONS
 	select BOARD_ROMSIZE_KB_8192
 	select HAVE_ACPI_RESUME
 	select HAVE_ACPI_TABLES
+	# Requires cmos.layout in this directory: src/arch/x86/Makefile.mk gates
+	# both build/option_table.h and the cmos_layout.bin CBFS entry on
+	# HAVE_OPTION_TABLE (not USE_OPTION_TABLE), so the layout is a hard build
+	# dependency once this is selected.
 	select HAVE_OPTION_TABLE
 	select MAINBOARD_HAS_LIBGFXINIT
 	select MAINBOARD_USES_IFD_GBE_REGION
@@ -29,8 +33,13 @@ config BOARD_SPECIFIC_OPTIONS
     select HAVE_MRC
     select HAVE_REFCODE_BLOB
 	select UNLOCK_FLASH_REGIONS
-	select SOC_INTEL_COMMON_BLOCK_HDA
-	select SOC_INTEL_COMMON_BLOCK_HDA_VERB
+	# NOT SOC_INTEL_COMMON_BLOCK_HDA*: those live under soc/intel/common/block
+	# and depend on SOC_INTEL_COMMON, which is n for this pre-FSP generation
+	# (northbridge/intel/broadwell + southbridge/intel/lynxpoint). Selecting
+	# them produces unmet direct dependencies and fails savedefconfig. HDA here
+	# comes from southbridge/intel/wildcatpoint, which already selects
+	# AZALIA_HDA_CODEC_SUPPORT; the codec verbs come from this board's
+	# hda_verb.c via AZALIA_USE_LEGACY_VERB_TABLE above.
 
 config VBOOT
 	select VBOOT_VBNV_CMOS
@@ -43,5 +52,26 @@ config MAINBOARD_PART_NUMBER
 
 config INTEL_GMA_VBT_FILE
 	default "src/mainboard/\$(MAINBOARDDIR)/data.vbt"
+
+# IFD_BIN_PATH/ME_BIN_PATH/GBE_BIN_PATH already default to
+# 3rdparty/blobs/mainboard/$(MAINBOARDDIR)/<name>, which is where the recipe
+# stages files/blobs/. The Broadwell northbridge is the odd one out: its two
+# blob paths default to bare "mrc.bin"/"refcode.elf" relative to the source
+# top, where nothing exists ("No rule to make target 'mrc.bin'"). Point them at
+# the same staging directory as everything else.
+config IFD_BIN_PATH
+	default "3rdparty/blobs/mainboard/\$(MAINBOARDDIR)/descriptor.bin"
+
+config ME_BIN_PATH
+    default "3rdparty/blobs/mainboard/\$(MAINBOARDDIR)/me.bin"
+
+config REFCODE_BLOB_FILE
+	default "3rdparty/blobs/mainboard/\$(MAINBOARDDIR)/refcode.elf"
+
+config MRC_FILE
+	default "3rdparty/blobs/mainboard/\$(MAINBOARDDIR)/mrc.bin"
+
+config REFCODE_BLOB_FILE
+	default "3rdparty/blobs/mainboard/\$(MAINBOARDDIR)/refcode.elf"
 
 endif

@@ -1,0 +1,91 @@
+## SPDX-License-Identifier: GPL-2.0-only
+
+# CMOS option table for the Intel NUC5i5RYB / NUC5i7RYH.
+#
+# Derived from google/jecht -- the other Broadwell + Wildcat Point-LP desktop
+# port -- and extended with this board's four CFR options.
+#
+# Every opt_name declared in cfr.c MUST have a row here. With HAVE_OPTION_TABLE
+# selected, get_uint_option() resolves names through this table, so a CFR entry
+# with no matching row can be shown but never read back.
+#
+# Layout constraints, before moving anything:
+#   bits   0..119  RTC registers -- reserved, do not touch.
+#   bit      384   RTC_BOOT_BYTE (byte 48); hardcoded in coreboot.
+#   bits 416..543  ChromeOS VBNV (bytes 52..67). It maintains its own CRC and
+#                  must stay OUTSIDE the coreboot checksum range -- that is why
+#                  the checksum stops at 415, and why every board option has to
+#                  fit in bits 392..415 (bytes 49..51).
+#   bits 411..415  the last five free bits in that window. All five are used
+#                  below; adding another option means reclaiming 392..394 or
+#                  399..407, NOT extending the checksum past 415.
+
+# -----------------------------------------------------------------
+entries
+
+#start-bit length  config config-ID	name
+
+# -----------------------------------------------------------------
+0	120	r	0	reserved_memory
+
+# -----------------------------------------------------------------
+# RTC_BOOT_BYTE (coreboot hardcoded)
+384	1	e	4	boot_option
+388	4	h	0	reboot_counter
+
+# -----------------------------------------------------------------
+# coreboot config options: console
+395	4	e	6	debug_level
+
+# coreboot config options: southbridge
+408	1	e	1	nmi
+409	2	e	7	power_on_after_fail
+
+# -----------------------------------------------------------------
+# Mainboard options. These names are the cfr.c opt_names:
+#   sata_enable -> ramstage.c, enables the 00:1f.2 AHCI controller
+#   tpm_enable  -> ptt.c, gates the ME firmware-TPM (PTT)
+#   tpm_clear   -> ptt.c, one-shot TPM2_Clear, self-resets after it runs
+#   fan_profile -> ramstage.c, NCT5577D SmartFan curve (enum fan_profile)
+411	1	e	1	sata_enable
+412	1	e	1	tpm_enable
+413	1	e	8	tpm_clear
+414	2	e	9	fan_profile
+
+# coreboot config options: bootloader
+#Used by ChromeOS:
+416	128	r	0	vbnv
+
+# coreboot config options: check sums
+984	16	h	0	check_sum
+
+# -----------------------------------------------------------------
+
+enumerations
+
+#ID	value	text
+1	0	Disable
+1	1	Enable
+4	0	Fallback
+4	1	Normal
+6	0	Emergency
+6	1	Alert
+6	2	Critical
+6	3	Error
+6	4	Warning
+6	5	Notice
+6	6	Info
+6	7	Debug
+6	8	Spew
+7	0	Disable
+7	1	Enable
+7	2	Keep
+8	0	No
+8	1	Clear next boot
+9	0	Quiet
+9	1	Balanced
+9	2	Performance
+# -----------------------------------------------------------------
+checksums
+
+checksum 392 415 984

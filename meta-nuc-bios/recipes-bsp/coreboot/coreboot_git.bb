@@ -4,12 +4,14 @@ DESCRIPTION = "Builds coreboot with the mb/intel/nuc5i5ryb mainboard port \
 NUC5i7RYH. The i7 kit uses the same NUC5iXRYB board as the i5 the port was \
 developed on -- same Wildcat Point-LP PCH, NCT5577D SIO, I218-V GbE; only \
 the soldered CPU/IGD differ, which coreboot probes at runtime. Payload is \
-selectable via NUC_BIOS_PAYLOAD: edk2 (the edk2-uefipayload recipe's \
-UEFIPAYLOAD.fd, consumed as a prebuilt FV payload -- CFR setup options and \
-the SMMSTORE-backed EFI variable store are enabled explicitly in \
-payload-edk2.config) or linuxboot (linux-linuxboot bzImage + u-root \
-initramfs). Only the 6 MiB BIOS region of the 8 MiB flash is targeted; the \
-factory descriptor/GbE/ME regions stay on the chip."
+selectable via NUC_BIOS_PAYLOAD: edk2 (built by coreboot's own \
+payloads/external/edk2 machinery, with iPXE embedded in the FV via \
+EDK2_ENABLE_IPXE -- all tuned through payloads/external/edk2/Kconfig symbols \
+set in payload-edk2.config) or linuxboot (linux-linuxboot bzImage + u-root \
+initramfs). The image embeds this unit's factory descriptor/GbE/ME regions \
+(HAVE_IFD_BIN et al.), so build/coreboot.rom is a complete 8 MiB image valid \
+for blank-chip/clip recovery; in-band flashing still writes only the BIOS \
+region -- the factory regions on the chip are never touched from the host."
 HOMEPAGE = "https://review.coreboot.org/c/coreboot/+/94032"
 
 # Source pin + license shared with coreboot-toolchain-native.
@@ -17,16 +19,29 @@ require coreboot-source.inc
 
 inherit deploy
 
-# The vendored board patch is Gerrit 94032's current patchset with its two
-# cosmetic hunks (mainboard docs index, MAINTAINERS) stripped, leaving only
-# new-file additions -- upstream stacks it on an unrelated unmerged change,
-# so it is rebased here onto real master. Refresh the patch from
-#   https://review.coreboot.org/changes/coreboot~94032/revisions/current/patch
-# when a new patchset lands (and drop it entirely once the port merges).
+# The mainboard port is carried as plain source files in files/mainboard/,
+# copied into the coreboot tree by do_configure:prepend rather than applied as
+# a patch. The port creates only new files (nothing upstream is modified), so
+# there is nothing for a patch to diff against, and shipping the sources
+# directly makes them editable without patch surgery.
+#
+# Provenance: coreboot Gerrit 94032 (mb/intel/nuc5i5ryb), plus board-local work
+# on top -- bootblock.c (early NCT5577D AC-loss policy and GEN_PMCON_3 logging
+# before ramstage's read-modify-write clears the RTC-well flags), smihandler.c
+# (Super I/O S5 entry handling, GPE re-assert) and acpi/lan.asl + the
+# devicetree gpe0_en_4 setting (Wake-on-LAN as the remote power-on path; unlike
+# AFTERG3_EN it lives in the suspend well, so it survives an AC cycle without
+# depending on RTC-well state). See files/mainboard/README.md.
+#
+# 0004 stays a patch because it modifies an existing upstream file
+# (southbridge/intel/lynxpoint/acpi/xhci.asl), which files/mainboard/ cannot
+# express.
+#
 # do_extract_blobs pins the vboot submodule URL explicitly so it never
 # depends on what bitbake set origin to.
 SRC_URI = "${COREBOOT_GIT_URI} \
-           file://0001-mb-intel-nuc5i5ryb-Add-Intel-Broadwell-U-NUC-mainboard.patch \
+           file://mainboard \
+           file://blobs \
            file://nuc5i7ryh.config \
            file://payload-edk2.config \
            file://payload-linuxboot.config \
@@ -70,8 +85,8 @@ COMPATIBLE_MACHINE = "nuc5i7ryh"
 # cross toolchain comes prebuilt (sstate-cached) from
 # coreboot-toolchain-native -- editing this recipe no longer re-runs the
 # ~30-minute crossgcc bootstrap. (The edk2 payload likewise builds in its
-# own recipe -- see edk2-uefipayload.)
-DEPENDS = "bison-native flex-native python3-native util-linux-native coreboot-toolchain-native"
+# own recipe.)
+DEPENDS = "bison-native flex-native python3-native util-linux-native nasm-native acpica-native coreboot-toolchain-native"
 
 # Where the staged toolchain lands (coreboot-toolchain-native installs it
 # under ${datadir}); coreboot's Makefile takes it via XGCCPATH (trailing
@@ -108,39 +123,50 @@ NUC_BIOS_PAYLOAD ??= "edk2"
 # a GbE-equipped board wants regardless (the Gerrit 94032 port reports the
 # I218-V working, with unstated blob provenance -- if that was ever true
 # unpatched, enabling is still correct, merely redundant).
-COREBOOT_BLOBS_DIR ??= ""
 COREBOOT_USE_DONOR_BLOBS ??= "1"
 COREBOOT_REFCODE_GBE_PATCH ??= "1"
 
-# Video BIOS Table. The vendored board patch carries data.vbt as a bare
-# "Binary files differ" stanza -- Gerrit's /patch endpoint does not emit GIT
-# binary patches -- so it applies as a ZERO-LENGTH file and coreboot adds an
-# empty vbt.bin to CBFS. libgfxinit does its own native init and does not read
-# the VBT, but Linux's i915 pulls it from the ACPI opregion to learn the
-# board's port/encoder mapping, so an empty one is a latent defect. Recover a
-# real table from a factory dump and point this at it:
-#     ./scripts/extract-vbt.py stock-bios.rom blobs/data.vbt
-# Left unset, the build still completes and warns.
-COREBOOT_VBT_FILE ??= ""
+# NOTE: no PXE/option-ROM plumbing here any more. iPXE is built by
+# payloads/external/iPXE and embedded in the edk2 payload FV as an FFS, driven
+# by CONFIG_EDK2_ENABLE_IPXE in payload-edk2.config.
+# The old approach put an iPXE PCI option ROM in CBFS as pci<vid>,<did>.rom via
+# CONFIG_PXE_ROM; that cannot work for a LOM, because coreboot's pci_rom_run()
+# returns early for any device that is not PCI_CLASS_DISPLAY_VGA, so the ROM is
+# never loaded. Confirmed on hardware 2026-07-28: no PXE boot option appeared.
 
-# UEFI PXE for the onboard I218-V: add iPXE's UEFI option ROM (built by the
-# ipxe-efirom recipe) to CBFS as pci<vid>,<did>.rom via CONFIG_PXE_ROM, so
-# UefiPayloadPkg dispatches it and the payload's NetworkPkg stack
-# (NETWORK_ENABLE in edk2-uefipayload) gets an SNP to drive. Set
-# COREBOOT_ENABLE_PXE=0 to omit it. The PCI id must match the .efirom the
-# ipxe-efirom recipe built (IPXE_VID/IPXE_DID there) -- confirm with lspci on
-# the NUC. NB: only meaningful with the refcode GbE-enable patch on (above),
-# else there is no NIC. Whether UefiPayloadPkg actually dispatches a CBFS
-# option ROM for this non-VGA LOM is the one thing to confirm on hardware; if
-# not, the fallback is bundling the driver as an FFS in the payload FV.
-# 8086:15a3 CONFIRMED on this unit via the UEFI shell's `pci` (00:19.0). The
-# original 8086,15a1 guess meant PciBusDxe never matched the option ROM to the
-# device, so no SNP and no PXE. Keep in step with IPXE_DID in ipxe-efirom.
-COREBOOT_ENABLE_PXE ??= "1"
-COREBOOT_PXE_ROM_ID ??= "8086,15a3"
-COREBOOT_PXE_EFIROM ??= "808615a3.efirom"
+BLOBS_DIR = "3rdparty/blobs/mainboard/intel/nuc5i5ryb"
+BLOBS_DEST = "${S}/${BLOBS_DIR}"
 
-BLOBS_DEST = "${S}/3rdparty/blobs/mainboard/intel/nuc5i5ryb"
+# This unit's factory flash regions, extracted from stock-bios.rom with
+# `ifdtool -x` and byte-verified against the dump (2026-07-28). Embedding them
+# (the CONFIG_HAVE_*_BIN block appended to .config below) makes
+# build/coreboot.rom a complete 8 MiB image that is also valid for
+# blank-chip/clip recovery -- scripts/nuc-spi.sh accepts it because everything
+# below the BIOS region matches the stock backup byte-for-byte.
+MAINBOARD_DIR = "src/mainboard/intel/nuc5i5ryb"
+
+do_configure:prepend() {
+    # The board port: plain sources, not a patch (see the SRC_URI comment).
+    # file://mainboard unpacks the whole directory to ${WORKDIR}/mainboard.
+    install -d "${S}/${MAINBOARD_DIR}"
+    cp -a "${WORKDIR}/mainboard/." "${S}/${MAINBOARD_DIR}/"
+    # Layer-only files, and docs that belong outside the mainboard directory.
+    rm -rf "${S}/${MAINBOARD_DIR}/Documentation" "${S}/${MAINBOARD_DIR}/README.md"
+    install -D -m 0644 "${WORKDIR}/mainboard/Documentation/nuc5i5ryb.md" \
+        "${S}/Documentation/mainboard/intel/nuc5i5ryb.md"
+
+    # file://blobs unpacks the whole directory to ${WORKDIR}/blobs. Stage all of
+    # it: coreboot's *_BIN_PATH / *_FILE settings are paths relative to the
+    # source top, so every blob the .config can reference has to live under
+    # ${S}. Copying the directory wholesale (rather than naming each file) means
+    # dropping a new blob into the layer -- gbe.bin, another vgabios -- needs no
+    # recipe edit, only the matching CONFIG_* line.
+    install -d "${BLOBS_DEST}"
+    cp -a "${WORKDIR}/blobs/." "${BLOBS_DEST}/"
+    # Layer-only documentation; not a blob.
+    rm -f "${BLOBS_DEST}/README.md"
+    chmod 0644 "${BLOBS_DEST}"/*
+}
 
 do_configure() {
     cat ${WORKDIR}/nuc5i7ryh.config > ${B}/.config
@@ -150,64 +176,12 @@ do_configure() {
             -e "s#@INITRD@#${DEPLOY_DIR_IMAGE}/initramfs-u-root.cpio#" \
             ${WORKDIR}/payload-linuxboot.config >> ${B}/.config
     else
-        sed -e "s#@UEFIPAYLOAD@#${DEPLOY_DIR_IMAGE}/UEFIPAYLOAD.fd#" \
-            ${WORKDIR}/payload-edk2.config >> ${B}/.config
+        cat ${WORKDIR}/payload-edk2.config >> ${B}/.config
     fi
-
-    if [ -n "${COREBOOT_BLOBS_DIR}" ]; then
-        for f in mrc.bin refcode.elf; do
-            [ -e "${COREBOOT_BLOBS_DIR}/$f" ] || \
-                bbfatal "COREBOOT_BLOBS_DIR is set but ${COREBOOT_BLOBS_DIR}/$f is missing"
-        done
-        # The port expects the blobs under 3rdparty/blobs/mainboard/<board>/
-        # (the HAVE_MRC/HAVE_REFCODE_BLOB default paths).
-        install -d ${BLOBS_DEST}
-        install -m 0644 ${COREBOOT_BLOBS_DIR}/mrc.bin ${BLOBS_DEST}/mrc.bin
-        install -m 0644 ${COREBOOT_BLOBS_DIR}/refcode.elf ${BLOBS_DEST}/refcode.elf
-    fi
-
-    if [ -n "${COREBOOT_VBT_FILE}" ]; then
-        [ -s "${COREBOOT_VBT_FILE}" ] || \
-            bbfatal "COREBOOT_VBT_FILE is set to ${COREBOOT_VBT_FILE} but that file is missing or empty"
-        install -m 0644 "${COREBOOT_VBT_FILE}" \
-            ${S}/src/mainboard/intel/nuc5i5ryb/data.vbt
-        bbnote "VBT: installed $(stat -c %s ${COREBOOT_VBT_FILE}) bytes from ${COREBOOT_VBT_FILE}"
-    elif [ ! -s ${S}/src/mainboard/intel/nuc5i5ryb/data.vbt ]; then
-        bbwarn "data.vbt is empty (the vendored patch carries no binary content) -- CBFS will get a zero-length vbt.bin and Linux i915 will find no VBT. Extract one with scripts/extract-vbt.py and set COREBOOT_VBT_FILE."
-    fi
-
-    if [ -n "${COREBOOT_BLOBS_DIR}" ] || [ "${COREBOOT_USE_DONOR_BLOBS}" = "1" ]; then
-        # The Broadwell Kconfig defaults for the blob paths are bare
-        # "mrc.bin"/"refcode.elf" (relative to the source top, where nothing
-        # is); point them at the extracted/user-supplied copies.
-        cat >> ${B}/.config <<'EOF'
-CONFIG_USE_BLOBS=y
-CONFIG_HAVE_MRC=y
-CONFIG_MRC_FILE="3rdparty/blobs/mainboard/intel/nuc5i5ryb/mrc.bin"
-CONFIG_HAVE_REFCODE_BLOB=y
-CONFIG_REFCODE_BLOB_FILE="3rdparty/blobs/mainboard/intel/nuc5i5ryb/refcode.elf"
-EOF
-    else
-        bbwarn "coreboot: no blobs (COREBOOT_USE_DONOR_BLOBS=0, COREBOOT_BLOBS_DIR unset) -- building the CI-style blob-less ROM; it will NOT boot the NUC."
-    fi
-
-    # iPXE UEFI option ROM -> CBFS as pci<id>.rom. CONFIG_PXE + CONFIG_PXE_ROM
-    # (use an existing image, not BUILD_IPXE) tells coreboot to add the
-    # prebuilt .efirom the ipxe-efirom recipe deployed. The absolute
-    # DEPLOY_DIR_IMAGE path is what payloads/external/iPXE/Makefile copies in.
-    if [ "${COREBOOT_ENABLE_PXE}" = "1" ]; then
-        if [ ! -s "${DEPLOY_DIR_IMAGE}/${COREBOOT_PXE_EFIROM}" ]; then
-            bbfatal "COREBOOT_ENABLE_PXE=1 but ${DEPLOY_DIR_IMAGE}/${COREBOOT_PXE_EFIROM} is missing -- build ipxe-efirom first (do_configure[depends])."
-        fi
-        cat >> ${B}/.config <<EOF
-CONFIG_PXE=y
-CONFIG_PXE_ROM=y
-CONFIG_PXE_ROM_ID="${COREBOOT_PXE_ROM_ID}"
-CONFIG_PXE_ROM_FILE="${DEPLOY_DIR_IMAGE}/${COREBOOT_PXE_EFIROM}"
-EOF
-    fi
+    # The port expects the blobs under 3rdparty/blobs/mainboard/<board>/
+    # (the HAVE_MRC/HAVE_REFCODE_BLOB default paths).
+    install -d ${BLOBS_DEST}
 }
-do_configure[vardeps] += "COREBOOT_ENABLE_PXE COREBOOT_PXE_ROM_ID COREBOOT_PXE_EFIROM COREBOOT_VBT_FILE"
 
 # Donor-blob extraction (mode 2), a standalone task so the blobs can be
 # produced and inspected without the multi-hour coreboot compile:
@@ -268,7 +242,14 @@ PYEOF
     bbplain "$(sha256sum ${BLOBS_DEST}/mrc.bin ${BLOBS_DEST}/refcode.elf)"
 }
 do_extract_blobs[network] = "1"
-addtask extract_blobs after do_patch before do_compile
+# After do_configure, not do_patch: do_configure:prepend stages the layer's
+# whole blobs/ directory into ${BLOBS_DEST}, which includes mrc.bin and
+# refcode.elf. Both tasks write those two paths, and "after do_patch" left them
+# unordered -- bitbake ran them concurrently, so the donor's GbE-patched
+# refcode could be overwritten by (or interleaved with) the layer's unpatched
+# copy, silently disabling the I218-V. Ordering it here makes the layer copies
+# the baseline and the donor pair authoritative whenever donor mode is on.
+addtask extract_blobs after do_configure before do_compile
 
 do_compile() {
     # Host-side tools (cbfstool & friends via HOSTCC) must use the build
@@ -305,13 +286,6 @@ python () {
     if d.getVar('NUC_BIOS_PAYLOAD') == 'linuxboot':
         d.appendVarFlag('do_compile', 'depends',
                         ' linux-linuxboot:do_deploy u-root:do_deploy')
-    else:
-        d.appendVarFlag('do_compile', 'depends',
-                        ' edk2-uefipayload:do_deploy')
-    # The iPXE .efirom must be deployed before do_configure -- it is both
-    # referenced (CONFIG_PXE_ROM_FILE) and existence-checked there.
-    if d.getVar('COREBOOT_ENABLE_PXE') == '1':
-        d.appendVarFlag('do_configure', 'depends', ' ipxe-efirom:do_deploy')
 }
 
 # Firmware is not target userspace: the ROM embeds its own everything.

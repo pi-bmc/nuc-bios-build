@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+config BOARD_INTEL_NUC5I5RYB
+	bool "NUC5i5RYB"

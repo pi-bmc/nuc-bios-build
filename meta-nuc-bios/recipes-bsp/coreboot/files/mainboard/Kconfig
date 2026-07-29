@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+if BOARD_INTEL_NUC5I5RYB
+
+config BOARD_SPECIFIC_OPTIONS
+	def_bool y
+	select AZALIA_USE_LEGACY_VERB_TABLE
+	select BOARD_ROMSIZE_KB_8192
+	select HAVE_ACPI_RESUME
+	select HAVE_ACPI_TABLES
+	select HAVE_OPTION_TABLE
+	select MAINBOARD_HAS_LIBGFXINIT
+	select MAINBOARD_USES_IFD_GBE_REGION
+	# CFR options only take effect with an option backend; the EFI variable
+	# store flips the backend default to USE_UEFI_VARIABLE_STORE.
+	select DRIVERS_EFI_VARIABLE_STORE
+	select DRIVERS_OPTION_CFR_ENABLED
+	select POWER_STATE_DEFAULT_ON_AFTER_FAILURE	# server: auto power-on after AC loss
+	select MEMORY_MAPPED_TPM
+	select INTEL_GMA_HAVE_VBT
+	select INTEL_INT15
+	select SOC_INTEL_BROADWELL
+	select SUPERIO_NUVOTON_COMMON_HWM
+	select SUPERIO_NUVOTON_NCT6776
+	select SYSTEM_TYPE_MINIPC
+	select NO_UART_ON_SUPERIO
+	select HAVE_IFD_BIN
+	select HAVE_ME_BIN
+    select HAVE_MRC
+    select HAVE_REFCODE_BLOB
+	select UNLOCK_FLASH_REGIONS
+	select SOC_INTEL_COMMON_BLOCK_HDA
+	select SOC_INTEL_COMMON_BLOCK_HDA_VERB
+
+config VBOOT
+	select VBOOT_VBNV_CMOS
+
+config MAINBOARD_DIR
+	default "intel/nuc5i5ryb"
+
+config MAINBOARD_PART_NUMBER
+	default "NUC5i5RYB"
+
+config INTEL_GMA_VBT_FILE
+	default "src/mainboard/\$(MAINBOARDDIR)/data.vbt"
+
+endif

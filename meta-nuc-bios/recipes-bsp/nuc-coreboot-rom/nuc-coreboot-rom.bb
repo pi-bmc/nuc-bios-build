@@ -18,11 +18,6 @@ do_compile[noexec] = "1"
 # machine (nuc5i7ryh).
 COREBOOT_DEPLOY = "${TOPDIR}/tmp/deploy/images/nuc5i7ryh"
 
-# Build the ROM (default mc) before installing. Signature-aware: a coreboot
-# change rebuilds this and the image. Format: mc:<from>:<to>:<recipe>:<task>,
-# to-empty = the default multiconfig.
-do_install[mcdepends] = "mc:flasher::coreboot:do_deploy"
-
 do_install() {
     src="${COREBOOT_DEPLOY}/coreboot-nuc5i7ryh.rom"
     if [ ! -e "$src" ]; then

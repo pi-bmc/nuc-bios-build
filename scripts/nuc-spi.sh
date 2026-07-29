@@ -59,20 +59,26 @@ require_size() {
         die "$f is ${actual} bytes, expected ${want} -- not a full-chip image"
 }
 
-# The coreboot build embeds no descriptor/ME/GbE (no CONFIG_HAVE_IFD_BIN), so
-# everything below the BIOS region must still be erased padding. If it is not,
-# someone changed the image layout and the region-limited write below is no
-# longer the right operation.
+# With CONFIG_HAVE_IFD_BIN/ME_BIN/GBE_BIN the build embeds this unit's own
+# factory descriptor/GbE/ME below the BIOS region; older builds left erased
+# padding there. Both are safe for the region-limited write (and for merge).
+# Anything else -- factory regions that do NOT match this unit's backup --
+# means the image carries a foreign descriptor/MAC/ME and no write operation
+# here is the right one. Refuse.
 require_bios_region_only() {
-    local f="$1" base="$2"
-    python3 - "$f" "$base" <<'PY'
+    local f="$1" base="$2" ref="$3"
+    python3 - "$f" "$base" "$ref" <<'PY'
 import sys
-path, base = sys.argv[1], int(sys.argv[2], 0)
+path, base, ref = sys.argv[1], int(sys.argv[2], 0), sys.argv[3]
 with open(path, 'rb') as fh:
     head = fh.read(base)
-if head.strip(b'\xff'):
-    sys.exit("error: %s has non-0xff data below 0x%06x -- it is not a "
-             "BIOS-region-only image. Refusing." % (path, base))
+if not head.strip(b'\xff'):
+    sys.exit(0)   # BIOS-region-only image (pre-HAVE_IFD_BIN builds)
+with open(ref, 'rb') as fh:
+    if head == fh.read(base):
+        sys.exit(0)   # full image embedding this unit's own factory regions
+sys.exit("error: %s has data below 0x%06x matching neither erased flash nor "
+         "%s -- foreign descriptor/ME/GbE. Refusing." % (path, base, ref))
 PY
 }
 
@@ -137,7 +143,7 @@ cmd_merge() {
 
     local base limit
     read -r base limit < <(bios_bounds "${stock}")
-    require_bios_region_only "${ROM}" "${base}"
+    require_bios_region_only "${ROM}" "${base}" "${stock}"
 
     python3 - "${stock}" "${ROM}" "${out}" "${base}" "${limit}" <<'PY'
 import sys
@@ -163,7 +169,7 @@ cmd_flash() {
 
     local base limit
     read -r base limit < <(bios_bounds "${stock}")
-    require_bios_region_only "${ROM}" "${base}"
+    require_bios_region_only "${ROM}" "${base}" "${stock}"
 
     LAYOUT_TMP="$(mktemp -t nuc5i7ryh.XXXXXX.layout)"
     python3 "${IFD_LAYOUT}" --layout "${stock}" > "${LAYOUT_TMP}"

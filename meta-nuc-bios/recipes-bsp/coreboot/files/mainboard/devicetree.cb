@@ -1,0 +1,105 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+chip northbridge/intel/broadwell
+	register "ec_present" = "false"		# NUC has no coreboot-managed EC
+	# Socketed SO-DIMM board (like the google/jecht chromeboxes): the DQ byte
+	# lanes are interleaved on the PCB. The elitebook laptop donor left this
+	# false, which trains but corrupts the IMC data path on this board, so the
+	# first CPU access to DRAM hangs (MC5/MC6 uncorrected errors).
+	register "dq_pins_interleaved" = "true"
+	chip cpu/intel/haswell
+		device cpu_cluster 0 on ops haswell_cpu_bus_ops end
+	end
+	device domain 0 on
+		ops broadwell_pci_domain_ops
+		subsystemid 0x8086 0x2057 inherit	# Intel NUC5i5RYB
+
+		device pci 00.0 on end # Host bridge (Broadwell-U -OPI)
+		device pci 02.0 on     # Internal graphics (HD Graphics 6000)
+			register "gfx" = "GMA_STATIC_DISPLAYS(0)"
+			register "gpu_dp_b_hotplug" = "4"
+			register "gpu_dp_c_hotplug" = "4"
+			# NUC5: external HDMI + mini-DP only, no internal panel -> no panel_cfg.
+			# Exact port mapping is done in gma-mainboard.ads (libgfxinit).
+		end
+		device pci 03.0 on end # iGPU HDMI/DP audio
+
+		chip southbridge/intel/wildcatpoint # Wildcat Point-LP PCH (8086:9cc3)
+			# PME_B0_EN, bit 13 of the standard-event GPE block (GPE 109 =
+			# DEFAULT_PRW_VALUE on LP). The I218-V's PME is the Wake-on-LAN
+			# source; with no gpe0_en_* set at all, pch_power_options() writes
+			# zeros to all four LP_GPE0_EN_x and the wake can never propagate.
+			# Note global_smi_enable() clears this again later
+			# (lynxpoint/smi.c: disable_gpe(PME_B0_EN)); smihandler.c puts it
+			# back on the way into S5.
+			register "gpe0_en_4" = "(1 << 13)"
+			# Port 0 = RYH 2.5" bay; controller (1f.2) toggled by "sata_enable"
+			register "sata_port_map" = "0x1"
+			device pci 13.0 off end # Smart Sound Audio DSP
+			device pci 14.0 on  end # xHCI Controller
+			device pci 15.0 off end # Serial I/O DMA
+			device pci 15.1 off end # I2C0
+			device pci 15.2 off end # I2C1
+			device pci 15.3 off end # GSPI0
+			device pci 15.4 off end # GSPI1
+			device pci 15.5 off end # UART0
+			device pci 15.6 off end # UART1
+			device pci 16.0 on  end # Management Engine Interface 1
+			device pci 16.1 off end # Management Engine Interface 2
+			device pci 16.2 off end # Management Engine IDE-R
+			device pci 16.3 off end # Management Engine KT
+			device pci 17.0 off end # SDIO
+			device pci 19.0 on  end # Intel Gigabit Ethernet (I218-V)
+			device pci 1b.0 on  end # High Definition Audio
+			device pci 1c.0 on  end # PCIe Port #1 (empty)
+			device pci 1c.1 off end # PCIe Port #2
+			device pci 1c.2 off end # PCIe Port #3
+			device pci 1c.3 on      # PCIe Port #4 -> M.2/E 2230 WLAN (7265)
+				smbios_slot_desc "SlotTypeM2Socket1_SD" "SlotLengthOther"
+					"M.2/E 2230 (WLAN)" "SlotDataBusWidth1X"
+			end
+			device pci 1c.4 on      # PCIe Port #5 -> M.2/M 2280 NVMe
+				smbios_slot_desc "SlotTypeM2Socket3" "SlotLengthOther"
+					"M.2/M 2280 (NVMe)" "SlotDataBusWidth4X"
+			end
+			device pci 1c.5 off end # PCIe Port #6
+			device pci 1d.0 on  end # USB2 EHCI #1
+			device pci 1f.0 on      # LPC bridge
+				# LPC generic I/O decode ranges, from stock (setpci 00:1f.0 0x84..0x90)
+				register "gen1_dec" = "0x000c0a01"
+				register "gen2_dec" = "0x000c0241"
+				register "gen3_dec" = "0x000c0251"
+				register "gen4_dec" = "0x000c02a1"
+				chip superio/nuvoton/nct6776 # Nuvoton NCT5577D (NCT6776-compatible) HWM/fan
+					device pnp 4e.0 off end		# Floppy
+					device pnp 4e.1 off end		# Parallel port
+					device pnp 4e.2 off end		# COM1
+					device pnp 4e.3 off end		# COM2 & IR
+					device pnp 4e.5 off end		# KBC
+					device pnp 4e.6 off end		# CIR
+					device pnp 4e.7 off end		# GPIO 6789
+					device pnp 4e.8 off end		# WDT1 / GPIO 01A
+					device pnp 4e.308 off end	# GPIOBASE (unused)
+					device pnp 4e.9 off end		# GPIO 1234567
+					device pnp 4e.a off end		# ACPI
+					device pnp 4e.b on		# Hardware monitor + front LED (0xa00)
+						io 0x60 = 0xa00
+						io 0x62 = 0		# 2nd HWM window unused
+						irq 0x70 = 0		# no HWM alert IRQ
+					end
+					device pnp 4e.d off end		# VID
+					device pnp 4e.e off end		# CIR wakeup
+					device pnp 4e.f off end		# GPIO PP/OD select
+					device pnp 4e.14 off end	# SVID
+					device pnp 4e.16 off end	# Deep sleep
+					device pnp 4e.17 off end	# GPIOA
+				end
+			end
+			# SATA is disabled in the stock BIOS (boots from NVMe). The NUC5i5RYH
+			# 2.5" bay can be enabled by turning this on + setting sata_port_map.
+			device pci 1f.2 off end # SATA Controller (AHCI)
+			device pci 1f.3 on  end # SMBus
+			device pci 1f.6 off end # Thermal
+		end
+	end
+end

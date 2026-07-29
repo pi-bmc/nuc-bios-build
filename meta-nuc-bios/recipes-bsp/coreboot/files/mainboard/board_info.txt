@@ -1,0 +1,8 @@
+Vendor name: Intel
+Board name: NUC5i5RYB
+Category: mini
+ROM protocol: SPI
+ROM package: SOIC-8
+ROM socketed: n
+Flashrom support: y
+Release year: 2015

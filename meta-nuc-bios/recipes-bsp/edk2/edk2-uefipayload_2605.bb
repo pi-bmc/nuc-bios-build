@@ -241,7 +241,8 @@ do_configure() {
     if [ "${EDK2_REDFISH}" = "1" ]; then
         python3 ${WORKDIR}/wire-redfish.py \
             ${S}/UefiPayloadPkg/UefiPayloadPkg.dsc \
-            ${S}/UefiPayloadPkg/UefiPayloadPkg.fdf
+            ${S}/UefiPayloadPkg/UefiPayloadPkg.fdf \
+            ${S}/MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/DriverBinding.c
     fi
 }
 

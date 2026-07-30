@@ -155,15 +155,38 @@ not build against this tree). `NucRedfishSyncDxe` is that consumer.
    `CableDetect = 0` and only raises it on catching a CDC
    `NETWORK_CONNECTION`/`NETWORK_CONNECTED` notification; Linux's `f_ecm` emits
    those only on link-state changes, and the enumeration-time one fires long
-   before the UEFI driver binds. Fixed from both ends: the BMC re-announces by
-   bouncing usb0 on a timer until the host appears
-   (`announceHostInterfaceLink`), and the driver retries the first GET.
+   before the UEFI driver binds, so it is effectively never set. That model
+   suits a dongle with an RJ45; it does not suit a point-to-point gadget, where
+   enumeration *is* the proof of link. `wire-redfish.py` patches the initialiser
+   to 1 (a real `NETWORK_DISCONNECT` still clears it).
+
+   An earlier fix had the BMC re-emit the notification by bouncing usb0 on a
+   timer. Do not reintroduce it: overlapping announcers ended up flapping the
+   link roughly twice every 5 s across the exact phase the host enumerates in.
 
 **Boot override lands one boot late.** BdsDxe reads `BootNext` before it
 connects controllers, and this driver can only run after discovery, i.e. during
 connect. Staging `BootSourceOverrideTarget` + `Once` therefore takes effect on
 the *next* boot. Verified 2026-07-30. Closing it needs the exchange to happen at
 End-of-DXE (connecting the ECM controller explicitly) rather than at BDS.
+
+### Warm reboot hangs at the BDS wait — pre-existing, not RHI
+
+`systemctl reboot` leaves the host at the splash with "Press ESC for Boot
+Options/Settings" indefinitely; cold power cycles are reliable. Isolated
+2026-07-30 and **not** caused by the Redfish or USB work:
+
+- still hangs with gadget rebinds suppressed and no link flapping;
+- still hangs with the CDC-ECM function disabled entirely
+  (`setUsbDeviceState{device:"ethernet",enabled:false}`), so nothing USB-net is
+  involved;
+- still hangs on the **pre-session firmware** re-flashed from
+  `backups/nuc-bios-region-pre-splash.rom`, which predates all of it.
+
+So it belongs to the coreboot board port / payload warm-reset path, not to this
+feature. Recover with a DC power cycle. Note the firmware console is per-boot,
+so `cbmem -c` after recovery shows the *recovery* boot, not the hung one — any
+real investigation needs the screen or a console that survives reset.
 
 ### Verifying it
 

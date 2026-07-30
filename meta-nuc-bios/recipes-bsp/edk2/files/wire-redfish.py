@@ -265,11 +265,64 @@ def wire_fdf(path):
     print(f"wire-redfish: wired the DXE FV in {path}")
 
 
+# ---------------------------------------------------------------------------
+# MdeModulePkg USB-net: assume media present
+# ---------------------------------------------------------------------------
+#
+# NetworkCommon starts every NIC at CableDetect = 0 and only raises it when it
+# catches a CDC NETWORK_CONNECTION notification carrying NETWORK_CONNECTED
+# (PxeFunction.c). Until then SNP reports no media and every HTTP request fails
+# with EFI_NO_MEDIA before a packet is sent.
+#
+# That model fits a USB dongle with a real RJ45 that may or may not have a cable
+# in it. It does not fit this board. The peer is a CDC-ECM *gadget* on a
+# point-to-point USB cable: if the device enumerated at all, the link exists.
+# Worse, the notification is edge-triggered -- Linux's f_ecm emits it on link
+# state changes, and the one sent during enumeration is long gone by the time
+# this driver binds during BDS connect. So the flag is not merely pessimistic,
+# it is effectively never set. Observed on hardware 2026-07-30: discovery and
+# REST EX both succeeded and the first GET still returned No Media.
+#
+# Defaulting to 1 inverts the assumption to match the hardware: media present
+# unless the device explicitly says otherwise. A later NETWORK_DISCONNECT still
+# clears it, because both call sites assign from the notification.
+CABLE_DETECT_OLD = "NicDevice->NicInfo.CableDetect    = 0;"
+CABLE_DETECT_NEW = (
+    "NicDevice->NicInfo.CableDetect    = 1;  "
+    "// NucRedfish: point-to-point ECM gadget, see wire-redfish.py"
+)
+
+
+def patch_usb_net_cable_detect(path):
+    """Default CableDetect to 1 in the USB-net driver binding."""
+    with open(path) as fh:
+        text = fh.read()
+
+    if CABLE_DETECT_NEW in text:
+        print(f"wire-redfish: {path} already patched, skipping")
+        return
+
+    count = text.count(CABLE_DETECT_OLD)
+    if count != 1:
+        sys.exit(
+            f"wire-redfish: expected exactly one CableDetect initialiser in {path}, "
+            f"found {count} -- re-check the USB-net driver before patching."
+        )
+
+    with open(path, "w") as fh:
+        fh.write(text.replace(CABLE_DETECT_OLD, CABLE_DETECT_NEW, 1))
+    print(f"wire-redfish: defaulted CableDetect to 1 in {path}")
+
+
 def main():
-    if len(sys.argv) != 3:
-        sys.exit("usage: wire-redfish.py <UefiPayloadPkg.dsc> <UefiPayloadPkg.fdf>")
+    if len(sys.argv) != 4:
+        sys.exit(
+            "usage: wire-redfish.py <UefiPayloadPkg.dsc> <UefiPayloadPkg.fdf> "
+            "<NetworkCommon/DriverBinding.c>"
+        )
     wire_dsc(sys.argv[1])
     wire_fdf(sys.argv[2])
+    patch_usb_net_cable_detect(sys.argv[3])
 
 
 if __name__ == "__main__":

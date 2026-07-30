@@ -242,7 +242,8 @@ do_configure() {
         python3 ${WORKDIR}/wire-redfish.py \
             ${S}/UefiPayloadPkg/UefiPayloadPkg.dsc \
             ${S}/UefiPayloadPkg/UefiPayloadPkg.fdf \
-            ${S}/MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/DriverBinding.c
+            ${S}/MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/DriverBinding.c \
+            ${S}/MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/PxeFunction.c
     fi
 }
 

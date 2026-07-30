@@ -314,15 +314,56 @@ def patch_usb_net_cable_detect(path):
     print(f"wire-redfish: defaulted CableDetect to 1 in {path}")
 
 
+# Defaulting CableDetect to 1 is not sufficient on its own, because the
+# notification handler clears it again. Both call sites read the last CDC
+# notification and drop CableDetect to 0 on NETWORK_DISCONNECT.
+#
+# A host *reboot* produces exactly that: the host resets, the gadget's link
+# drops, f_ecm queues a DISCONNECT, and the freshly bound UEFI driver reads it
+# and concludes there is no cable -- for the rest of the boot, because the
+# matching CONNECTED was emitted while nothing was listening. Observed on
+# hardware 2026-07-30: a warm reboot exhausted all eight media retries and the
+# Redfish exchange never happened, on a boot that was otherwise healthy.
+#
+# On a point-to-point gadget link a disconnect notification during
+# re-enumeration is noise, not a cable being pulled, so both branches are made
+# to assert media. Same reasoning as the initialiser above, applied to the one
+# place that can undo it.
+CABLE_CLEAR_OLD = "Nic->CableDetect = 0;"
+CABLE_CLEAR_NEW = "Nic->CableDetect = 1;  // NucRedfish: link is point-to-point"
+
+
+def patch_usb_net_cable_sticky(path):
+    """Stop NETWORK_DISCONNECT from clearing CableDetect."""
+    with open(path, newline="") as fh:
+        text = fh.read()
+
+    if CABLE_CLEAR_NEW in text:
+        print(f"wire-redfish: {path} already patched, skipping")
+        return
+
+    count = text.count(CABLE_CLEAR_OLD)
+    if count != 2:
+        sys.exit(
+            f"wire-redfish: expected exactly two CableDetect clears in {path}, "
+            f"found {count} -- re-check the USB-net driver before patching."
+        )
+
+    with open(path, "w", newline="") as fh:
+        fh.write(text.replace(CABLE_CLEAR_OLD, CABLE_CLEAR_NEW))
+    print(f"wire-redfish: made CableDetect sticky in {path}")
+
+
 def main():
-    if len(sys.argv) != 4:
+    if len(sys.argv) != 5:
         sys.exit(
             "usage: wire-redfish.py <UefiPayloadPkg.dsc> <UefiPayloadPkg.fdf> "
-            "<NetworkCommon/DriverBinding.c>"
+            "<NetworkCommon/DriverBinding.c> <NetworkCommon/PxeFunction.c>"
         )
     wire_dsc(sys.argv[1])
     wire_fdf(sys.argv[2])
     patch_usb_net_cable_detect(sys.argv[3])
+    patch_usb_net_cable_sticky(sys.argv[4])
 
 
 if __name__ == "__main__":

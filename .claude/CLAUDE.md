@@ -175,39 +175,41 @@ REST EX over a connected controller. So staging
 hand at End-of-DXE, which lengthens every boot including the ones with nothing
 staged; stage-then-power-cycle is unaffected and is the usual OOB flow.
 
-### Warm reboot hangs at the BDS wait — pre-existing, not RHI
+### Warm reboot: the FADT must advertise a *full* CF9 reset
 
-`systemctl reboot` leaves the host at the splash with "Press ESC for Boot
-Options/Settings" indefinitely; cold power cycles are reliable. Isolated
-2026-07-30 and **not** caused by the Redfish or USB work:
+`systemctl reboot` used to leave the host hung at the splash -- powered, USB
+enumerated, unresponsive to input -- with only a DC power cycle to recover.
+Cold boots were always fine. Root-caused 2026-07-30 by bisecting the reset
+method from Linux:
 
-- still hangs with gadget rebinds suppressed and no link flapping;
-- still hangs with the CDC-ECM function disabled entirely
-  (`setUsbDeviceState{device:"ethernet",enabled:false}`), so nothing USB-net is
-  involved;
-- still hangs on the **pre-session firmware** re-flashed from
-  `backups/nuc-bios-region-pre-splash.rom`, which predates all of it.
+```sh
+echo pci > /sys/kernel/reboot/type   # reboots cleanly
+echo acpi > /sys/kernel/reboot/type  # hangs (this is the default)
+```
 
-So it belongs to the coreboot board port / payload warm-reset path, not to this
-feature. Recover with a DC power cycle.
+Both write CF9. They differ only in the value: Linux's cold-mode `pci` path
+writes `0x0e` (`FULL_RST|RST_CPU|SYS_RST`), while the ACPI path uses whatever
+the FADT advertises -- and `arch_fill_fadt()` publishes `RST_CPU | SYS_RST`
+(`0x06`), a *soft* reset. That leaves the platform partially powered, and
+Broadwell's raminit cannot get back through it.
 
-What is known about the hung state itself (probed 2026-07-30 while hung):
+`mainboard_fill_fadt()` in the board port now adds `FULL_RST`, so the ACPI path
+does what the working path already did. Verified: `ResetValue = 0x0e` in the
+live FADT, and three consecutive `systemctl reboot` cycles each booting in
+~40 s. Scoped to the mainboard on purpose -- `0x06` is right on platforms whose
+raminit survives a soft reset.
 
-- the screen shows the splash and "Press ESC for Boot Options/Settings";
-- **ESC does nothing** — the host does not respond to HID at all, so this is a
-  hard hang, not BDS sitting in its hotkey wait;
-- the USB gadget reads `configured` and usb0 has carrier, so the host got as far
-  as enumerating USB;
-- **no Redfish request ever arrives**, though a healthy boot always issues three.
-  The exchange runs during BDS connect, so the hang is at or before that point —
-  the on-screen prompt is drawn earlier and simply never gets overwritten.
+Isolation notes, in case something similar appears again: the hang was **not**
+USB. It reproduced with gadget rebinds suppressed, with the CDC-ECM function
+disabled entirely, with the UDC fully unbound (no USB device at all), and on
+the pre-session firmware restored from backup.
 
-The obstacle to going further is that this board routes no UART, and the
-firmware console lives in CBMEM, which a cold recovery clears. `cbmem -1`
-(`--oneboot`) exists on the host and would show the previous boot, but only if
-the recovery preserves DRAM — a cold power cycle does not. Next step for anyone
-picking this up: recover via warm reset instead (if the hang ever permits it),
-or enable a CBMEM console that survives, before theorising about causes.
+A warm reboot also used to lose the Redfish exchange even when it booted: the
+host reset makes `f_ecm` queue a `NETWORK_DISCONNECT`, and the freshly bound
+UEFI driver reads it and treats the cable as unplugged for the rest of the boot
+(the matching `CONNECTED` having been emitted while nothing was listening).
+`wire-redfish.py` therefore makes `CableDetect` sticky as well as defaulting it
+to 1 -- see trap 4 above.
 
 ### Verifying it
 

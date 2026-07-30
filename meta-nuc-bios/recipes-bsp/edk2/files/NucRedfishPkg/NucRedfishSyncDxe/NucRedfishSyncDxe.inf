@@ -1,0 +1,57 @@
+## @file
+#  NucRedfishSyncDxe - host-side Redfish Host Interface client.
+#
+#  Produces EDKII_REDFISH_CONFIG_HANDLER_PROTOCOL, which RedfishConfigHandlerDriver
+#  invokes with the discovered BMC service. Reports this host's SMBIOS identity and
+#  boot progress to the BMC and applies any one-time boot override the BMC has set.
+#
+#  Without this module RedfishPkg discovers the service and then does nothing:
+#  edk2-redfish-client, which would normally consume it, does not build against
+#  this tree (see files/wire-redfish.py).
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION    = 0x0001000b
+  BASE_NAME      = NucRedfishSyncDxe
+  FILE_GUID      = 3f1c88d4-7a25-4e9b-8c31-6d40a5b7e912
+  MODULE_TYPE    = DXE_DRIVER
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = NucRedfishSyncDxeEntryPoint
+
+[Sources]
+  NucRedfishSyncDxe.c
+  NucRedfishInventory.c
+  NucRedfishSyncDxe.h
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  RedfishPkg/RedfishPkg.dec
+  NucRedfishPkg/NucRedfishPkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  DevicePathLib
+  JsonLib
+  MemoryAllocationLib
+  PrintLib
+  RedfishHttpLib
+  UefiBootManagerLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+  UefiLib
+  UefiRuntimeServicesTableLib
+
+[Protocols]
+  gEdkIIRedfishConfigHandlerProtocolGuid    ## PRODUCES
+  gEfiSmbiosProtocolGuid                    ## CONSUMES
+
+[Guids]
+  gEfiGlobalVariableGuid                    ## CONSUMES
+
+[Depex]
+  gEfiSmbiosProtocolGuid

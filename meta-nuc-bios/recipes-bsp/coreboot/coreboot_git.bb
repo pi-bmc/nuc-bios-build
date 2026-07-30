@@ -176,7 +176,13 @@ do_configure() {
             -e "s#@INITRD@#${DEPLOY_DIR_IMAGE}/initramfs-u-root.cpio#" \
             ${WORKDIR}/payload-linuxboot.config >> ${B}/.config
     else
-        cat ${WORKDIR}/payload-edk2.config >> ${B}/.config
+        # The payload is built by the edk2-uefipayload recipe and deployed as
+        # UEFIPAYLOAD.fd; substitute its absolute path (see the comment block
+        # in payload-edk2.config for why PAYLOAD_EDK2 stays on).
+        [ -e "${DEPLOY_DIR_IMAGE}/UEFIPAYLOAD.fd" ] || \
+            bbfatal "no UEFIPAYLOAD.fd in ${DEPLOY_DIR_IMAGE} -- build edk2-uefipayload first"
+        sed -e "s#@UEFIPAYLOAD@#${DEPLOY_DIR_IMAGE}/UEFIPAYLOAD.fd#" \
+            ${WORKDIR}/payload-edk2.config >> ${B}/.config
     fi
     # The port expects the blobs under 3rdparty/blobs/mainboard/<board>/
     # (the HAVE_MRC/HAVE_REFCODE_BLOB default paths).
@@ -286,6 +292,11 @@ python () {
     if d.getVar('NUC_BIOS_PAYLOAD') == 'linuxboot':
         d.appendVarFlag('do_compile', 'depends',
                         ' linux-linuxboot:do_deploy u-root:do_deploy')
+    else:
+        # do_configure reads the deployed .fd path, so the dependency is on
+        # configure rather than compile.
+        d.appendVarFlag('do_configure', 'depends',
+                        ' edk2-uefipayload:do_deploy')
 }
 
 # Firmware is not target userspace: the ROM embeds its own everything.

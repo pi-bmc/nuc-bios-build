@@ -1,0 +1,30 @@
+## @file
+#  ConnectRedfishApp - one-shot UEFI application that recursively connects all
+#  controllers, forcing the Driver####-loaded USB-net + NetworkPkg + RedfishPkg
+#  stack to bind on a stock BIOS (whose BDS connect-all ran before our drivers
+#  were loaded). Run it once as a BootNext boot option or from the UEFI shell,
+#  AFTER the Redfish driver set is registered. Output: ConnectRedfishApp.efi
+#  (subsystem = EFI Application).
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION    = 0x0001000b
+  BASE_NAME      = ConnectRedfishApp
+  FILE_GUID      = c40033ae-cfb2-4504-8420-eb5a7379717e
+  MODULE_TYPE    = UEFI_APPLICATION
+  VERSION_STRING = 1.0
+  ENTRY_POINT    = UefiMain
+
+[Sources]
+  ConnectRedfishApp.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  UefiApplicationEntryPoint
+  UefiBootServicesTableLib
+  UefiLib
+  MemoryAllocationLib

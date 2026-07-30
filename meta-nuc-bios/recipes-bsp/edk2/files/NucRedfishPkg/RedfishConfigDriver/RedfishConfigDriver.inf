@@ -1,0 +1,56 @@
+## @file
+#  RedfishConfigDriver - EDKII_REDFISH_PLATFORM_CONFIG_PROTOCOL producer backed
+#  by the AMI Aptio L"Setup" NV variable. Replaces
+#  RedfishPkg/RedfishPlatformConfigDxe on a stock BIOS (no HII/IFR walking).
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x0001000b
+  BASE_NAME                      = RedfishConfigDriver
+  FILE_GUID                      = 7c2f9a54-8e11-4d6b-9f30-c4a1b2d3e5f6
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = NucRedfishConfigDriverEntryPoint
+
+[Sources]
+  RedfishConfigDriver.c
+  RedfishConfigDriver.h
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  RedfishPkg/RedfishPkg.dec
+  NucRedfishPkg/NucRedfishPkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  MemoryAllocationLib
+  PrintLib
+  UefiBootServicesTableLib
+  UefiRuntimeServicesTableLib
+  UefiDriverEntryPoint
+  UefiLib
+
+[Guids]
+  gAmiSetupFormsetGuid                       ## CONSUMES
+
+[Protocols]
+  gEdkIIRedfishPlatformConfigProtocolGuid    ## PRODUCES
+  #
+  # HII fallback path (see RedfishConfigDriver.c): the Keyword Handler serves
+  # Get/Set for non-AMI x-UEFI-redfish config languages; the HII Database is
+  # walked by GetSupportedSchema to enumerate the served schemas. Both are
+  # produced by the platform HiiDatabaseDxe.
+  #
+  gEfiConfigKeywordHandlerProtocolGuid       ## CONSUMES
+  gEfiHiiDatabaseProtocolGuid                ## CONSUMES
+
+[Depex]
+  gEfiVariableArchProtocolGuid AND
+  gEfiVariableWriteArchProtocolGuid AND
+  gEfiConfigKeywordHandlerProtocolGuid AND
+  gEfiHiiDatabaseProtocolGuid

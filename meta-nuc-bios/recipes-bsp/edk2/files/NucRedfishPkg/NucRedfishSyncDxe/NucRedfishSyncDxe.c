@@ -81,19 +81,26 @@ LogResult (
 /**
   Apply a Redfish BootSourceOverrideTarget as a one-time BootNext.
 
-  KNOWN LIMITATION -- the override takes effect on the boot *after* the one that
-  fetched it. BdsDxe reads BootNext early in BdsEntry, before it connects
-  controllers; this driver only runs once discovery has completed, which is
-  during that connect phase. Setting BootNext here therefore misses the current
-  boot's decision and is honoured by the next one. Verified on hardware
-  2026-07-30: staging BiosSetup/Once left BootNext=Boot0000 in place after a
-  boot that went to the OS, and the following boot landed in the Boot Manager.
+  BY DESIGN, the override takes effect on the boot *after* the one that fetched
+  it -- this is not a bug to be worked around at this layer. BdsEntry caches
+  BootNext before it calls any PlatformBootManagerLib API, and says why:
 
-  Closing the gap means getting a Redfish service earlier than BDS connect --
-  either connecting the ECM controller explicitly at End-of-DXE and running the
-  exchange there, or having BDS re-read BootNext after connect. Both are larger
-  changes than this driver, and the one-boot lag is harmless for the common
-  cases (staging a target and then power-cycling).
+      // Cache the "BootNext" NV variable before calling any PlatformBootManagerLib
+      // APIs. This could avoid the "BootNext" set by PlatformBootManagerLib be
+      // consumed in this boot.
+      -- MdeModulePkg/Universal/BdsDxe/BdsEntry.c
+
+  Anything that runs during BDS -- which includes this driver, because it cannot
+  run until discovery has configured REST EX over a connected controller -- is
+  on the far side of that snapshot. Verified on hardware 2026-07-30: staging
+  BiosSetup/Once left BootNext=Boot0000 set after a boot that went to the OS,
+  and the next boot landed in the Boot Manager.
+
+  Same-boot semantics would require the whole exchange to happen before BDS,
+  i.e. connecting the USB host controller, the ECM function, SNP, IP4 and REST
+  EX by hand at End-of-DXE. That is a much larger change and it lengthens every
+  boot, including those where the BMC has nothing staged. Staging a target and
+  then power-cycling -- the usual OOB flow -- is unaffected.
 
   Redfish names boot *classes* ("Pxe", "Hdd", "BiosSetup"); UEFI has numbered
   Boot#### options. The mapping is done by scanning the boot options this

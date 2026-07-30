@@ -164,11 +164,16 @@ not build against this tree). `NucRedfishSyncDxe` is that consumer.
    timer. Do not reintroduce it: overlapping announcers ended up flapping the
    link roughly twice every 5 s across the exact phase the host enumerates in.
 
-**Boot override lands one boot late.** BdsDxe reads `BootNext` before it
-connects controllers, and this driver can only run after discovery, i.e. during
-connect. Staging `BootSourceOverrideTarget` + `Once` therefore takes effect on
-the *next* boot. Verified 2026-07-30. Closing it needs the exchange to happen at
-End-of-DXE (connecting the ECM controller explicitly) rather than at BDS.
+**Boot override lands one boot late, by design.** `BdsEntry` caches `BootNext`
+before calling any PlatformBootManagerLib API, specifically so that a `BootNext`
+set during BDS is *not* consumed in the same boot (the comment saying so is in
+`MdeModulePkg/Universal/BdsDxe/BdsEntry.c`). Anything running during BDS is on
+the far side of that snapshot, and this driver cannot run earlier — it needs
+REST EX over a connected controller. So staging
+`BootSourceOverrideTarget` + `Once` takes effect on the *next* boot. Verified
+2026-07-30. Same-boot semantics would mean connecting USB/ECM/SNP/IP4/REST EX by
+hand at End-of-DXE, which lengthens every boot including the ones with nothing
+staged; stage-then-power-cycle is unaffected and is the usual OOB flow.
 
 ### Warm reboot hangs at the BDS wait — pre-existing, not RHI
 

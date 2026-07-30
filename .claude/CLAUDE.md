@@ -189,9 +189,25 @@ Options/Settings" indefinitely; cold power cycles are reliable. Isolated
   `backups/nuc-bios-region-pre-splash.rom`, which predates all of it.
 
 So it belongs to the coreboot board port / payload warm-reset path, not to this
-feature. Recover with a DC power cycle. Note the firmware console is per-boot,
-so `cbmem -c` after recovery shows the *recovery* boot, not the hung one — any
-real investigation needs the screen or a console that survives reset.
+feature. Recover with a DC power cycle.
+
+What is known about the hung state itself (probed 2026-07-30 while hung):
+
+- the screen shows the splash and "Press ESC for Boot Options/Settings";
+- **ESC does nothing** — the host does not respond to HID at all, so this is a
+  hard hang, not BDS sitting in its hotkey wait;
+- the USB gadget reads `configured` and usb0 has carrier, so the host got as far
+  as enumerating USB;
+- **no Redfish request ever arrives**, though a healthy boot always issues three.
+  The exchange runs during BDS connect, so the hang is at or before that point —
+  the on-screen prompt is drawn earlier and simply never gets overwritten.
+
+The obstacle to going further is that this board routes no UART, and the
+firmware console lives in CBMEM, which a cold recovery clears. `cbmem -1`
+(`--oneboot`) exists on the host and would show the previous boot, but only if
+the recovery preserves DRAM — a cold power cycle does not. Next step for anyone
+picking this up: recover via warm reset instead (if the hang ever permits it),
+or enable a CBMEM console that survives, before theorising about causes.
 
 ### Verifying it
 

@@ -171,9 +171,28 @@ set during BDS is *not* consumed in the same boot (the comment saying so is in
 the far side of that snapshot, and this driver cannot run earlier — it needs
 REST EX over a connected controller. So staging
 `BootSourceOverrideTarget` + `Once` takes effect on the *next* boot. Verified
-2026-07-30. Same-boot semantics would mean connecting USB/ECM/SNP/IP4/REST EX by
-hand at End-of-DXE, which lengthens every boot including the ones with nothing
-staged; stage-then-power-cycle is unaffected and is the usual OOB flow.
+2026-07-30.
+
+This costs a boot in **every** flow, including power-cycling a host that was
+off: that first boot is the one that reads the override and writes `BootNext`
+(and clears the override on the BMC), so it still boots the default target, and
+only the boot after it honours the request. An earlier version of this note
+claimed stage-then-power-cycle was unaffected — it is not. Budget two boots, or
+watch for `boot override '<target>' -> Boot000X` in `cbmem -c` to know the
+request has been armed rather than applied.
+
+It is not impossible to apply in the same boot, just not free. Three options,
+cheapest last:
+
+- Run the exchange before the snapshot, at End-of-DXE — needs USB/ECM/SNP/IP4/
+  HTTP/REST EX connected by hand, which lengthens every boot including the ones
+  with nothing staged.
+- Set `BootNext` and immediately reset — reliable, but spends a reboot anyway.
+- Skip `BootNext` entirely: once `ApplyBootOverride` has matched an option, call
+  `EfiBootManagerBoot()` on it directly. That is same-boot by construction and
+  costs nothing when no override is staged. The trade is that it bypasses BDS's
+  own ordering and needs explicit handling for "the option failed, fall through
+  to the normal boot order".
 
 ### Warm reboot: the FADT must advertise a *full* CF9 reset
 
@@ -249,6 +268,48 @@ indefinitely while the BMC logged repeated rebind cycles). `usb.go` therefore
 never rebinds while the host is powered off, nor within
 `hostEnumerationGrace` (90 s) of power-on; it binds once on the power-on
 transition (`ensureHostInterfaceReady`) and then leaves the gadget alone.
+
+## iPXE must not see the BMC's management NIC
+
+iPXE builds its **own** xHCI/EHCI/UHCI drivers (`config/usb.h`), so on EFI it
+takes the USB controllers over and enumerates the bus itself rather than going
+through the firmware. `drivers/net/ecm.c` then binds the JetKVM's CDC-ECM gadget
+directly, and it lands ahead of the LOM in the PCI scan — so `net0` was the
+Redfish host interface and iPXE tried to netboot over the management link.
+
+`ipxe-efi_git.bb` empties two make variables to prevent it:
+
+- `DRIVERS_usb_net=""` — the one that matters; drops `ecm`/`ncm` et al.
+- `DRIVERS_efi_net=""` — closes the second route, `snpnet`/`nii` binding the
+  UEFI SNP handle the payload publishes for that same gadget.
+
+Both are asserted after the link, against `bin-x86_64-efi-sb/ipxe.efi.tmp.map`,
+because both rely on make's command-line precedence: an upstream rename would
+not fail the build, it would silently put the BMC link back at `net0`.
+
+Do **not** reason about this from `usbio.o` being absent from the link. That is
+only the USBIO pseudo-HCD (`USB_HCD_USBIO`, commented out upstream as "Very
+slow"); its absence says nothing about the real host controller drivers. That
+inference cost a build-and-flash cycle here.
+
+### Reading iPXE's device list without a console
+
+There is no UART and the KVM cannot capture the firmware phase, so build a
+throwaway image with an embedded script that reports over HTTP:
+
+```sh
+# probe.ipxe
+#!ipxe
+dhcp
+chain --autofree http://<workstation>:8099/report?net0mac=${net0/mac}&net0chip=${net0/chip}&net1mac=${net1/mac}&ip=${ip}
+exit
+```
+
+Pass `EMBED=/path/to/probe.ipxe` to the `oe_runmake` in `do_compile`, then serve
+`python3 -m http.server 8099` and read the access log. The NUC's LAN routes to
+the workstation subnet, and the 404 is irrelevant — the query string is the
+result. This is what proved the fix (`net0chip=i218v-3`, DHCP lease obtained)
+and what disproved the first, wrong diagnosis. Remove `EMBED` before shipping.
 
 ## Bootsplash
 

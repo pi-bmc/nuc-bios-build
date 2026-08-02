@@ -33,6 +33,7 @@
 
 #include <Library/DevicePathLib.h>
 #include <Library/JsonLib.h>
+#include <Library/PcdLib.h>
 #include <Library/UefiBootManagerLib.h>
 
 STATIC EFI_HANDLE  mImageHandle = NULL;
@@ -79,6 +80,143 @@ LogResult (
 }
 
 /**
+  Report whether a boot option's device path contains a node of the given type.
+
+  @param[in] Option   Boot option to inspect.
+  @param[in] Type     Device path type to look for.
+  @param[in] SubType  Device path sub-type to look for.
+
+  @retval TRUE   A matching node is present.
+  @retval FALSE  No matching node, or the option has no device path.
+**/
+STATIC
+BOOLEAN
+OptionHasNode (
+  IN EFI_BOOT_MANAGER_LOAD_OPTION  *Option,
+  IN UINT8                         Type,
+  IN UINT8                         SubType
+  )
+{
+  EFI_DEVICE_PATH_PROTOCOL  *Node;
+
+  if ((Option == NULL) || (Option->FilePath == NULL)) {
+    return FALSE;
+  }
+
+  for (Node = Option->FilePath; !IsDevicePathEnd (Node); Node = NextDevicePathNode (Node)) {
+    if ((DevicePathType (Node) == Type) && (DevicePathSubType (Node) == SubType)) {
+      return TRUE;
+    }
+  }
+
+  return FALSE;
+}
+
+/**
+  Report whether a boot option loads a particular file out of a firmware volume.
+
+  @param[in] Option    Boot option to inspect.
+  @param[in] FileGuid  FFS file GUID to match, may be NULL.
+
+  @retval TRUE   The option's device path names this FV file.
+  @retval FALSE  It does not, or FileGuid is NULL.
+**/
+STATIC
+BOOLEAN
+OptionIsFvFile (
+  IN EFI_BOOT_MANAGER_LOAD_OPTION  *Option,
+  IN EFI_GUID                      *FileGuid
+  )
+{
+  EFI_DEVICE_PATH_PROTOCOL           *Node;
+  MEDIA_FW_VOL_FILEPATH_DEVICE_PATH  *FvFile;
+
+  if ((Option == NULL) || (Option->FilePath == NULL) || (FileGuid == NULL)) {
+    return FALSE;
+  }
+
+  for (Node = Option->FilePath; !IsDevicePathEnd (Node); Node = NextDevicePathNode (Node)) {
+    if ((DevicePathType (Node) == MEDIA_DEVICE_PATH) &&
+        (DevicePathSubType (Node) == MEDIA_PIWG_FW_FILE_DP))
+    {
+      FvFile = (MEDIA_FW_VOL_FILEPATH_DEVICE_PATH *)Node;
+      if (CompareGuid (&FvFile->FvFileName, FileGuid)) {
+        return TRUE;
+      }
+    }
+  }
+
+  return FALSE;
+}
+
+/**
+  Report whether a boot option boots from local block storage.
+
+  "Hdd" cannot simply look for an HD() partition node. The boot options visible
+  at the point this driver runs are not the ones `efibootmgr` shows from the OS:
+  this is during BDS connect, before EfiBootManagerRefreshAllBootOption() and
+  before the OS-installed entries are merged in. Dumped on hardware 2026-08-02
+  while a Hdd override was staged:
+
+      Boot0001 "NVMe: PM951 NVMe SAMSUNG 256GB " attr=0x1
+      Boot0000 "Enter Setup"                     attr=0x109 [FvFile]
+      Boot0002 "UEFI Shell"                      attr=0x1   [FvFile]
+      Boot0003 "iPXE"                            attr=0x1   [FvFile]
+
+  The OS's own HD()-anchored entry (Boot0004 "debian") is absent, and the disk
+  candidate that *is* present is auto-created and points at the NVMe namespace --
+  PciRoot()/Pci()/Pci()/NVMe() -- with no partition node, because BDS expands it
+  to find the ESP later.
+
+  So match either shape: an HD() node when the option is partition-anchored, or
+  a storage messaging node when it names the device. Deliberately no bare
+  MSG_USB_DP -- that would also match the BMC's own CDC-ECM NIC; real USB mass
+  storage carries HD() once enumerated.
+
+  @param[in] Option  Boot option to inspect.
+
+  @retval TRUE   The option boots from local block storage.
+  @retval FALSE  It does not.
+**/
+STATIC
+BOOLEAN
+OptionIsDiskBoot (
+  IN EFI_BOOT_MANAGER_LOAD_OPTION  *Option
+  )
+{
+  EFI_DEVICE_PATH_PROTOCOL  *Node;
+
+  if ((Option == NULL) || (Option->FilePath == NULL)) {
+    return FALSE;
+  }
+
+  if (OptionHasNode (Option, MEDIA_DEVICE_PATH, MEDIA_HARDDRIVE_DP)) {
+    return TRUE;
+  }
+
+  for (Node = Option->FilePath; !IsDevicePathEnd (Node); Node = NextDevicePathNode (Node)) {
+    if (DevicePathType (Node) != MESSAGING_DEVICE_PATH) {
+      continue;
+    }
+
+    switch (DevicePathSubType (Node)) {
+      case MSG_NVME_NAMESPACE_DP:
+      case MSG_SATA_DP:
+      case MSG_ATAPI_DP:
+      case MSG_SCSI_DP:
+      case MSG_EMMC_DP:
+      case MSG_SD_DP:
+      case MSG_UFS_DP:
+        return TRUE;
+      default:
+        break;
+    }
+  }
+
+  return FALSE;
+}
+
+/**
   Apply a Redfish BootSourceOverrideTarget as a one-time BootNext.
 
   BY DESIGN, the override takes effect on the boot *after* the one that fetched
@@ -121,7 +259,6 @@ ApplyBootOverride (
   )
 {
   EFI_BOOT_MANAGER_LOAD_OPTION  *Options;
-  EFI_DEVICE_PATH_PROTOCOL      *Node;
   UINTN                         OptionCount;
   UINTN                         Index;
   UINTN                         Match;
@@ -142,39 +279,52 @@ ApplyBootOverride (
   Found = FALSE;
   Match = 0;
 
+  //
+  // Dump the candidates. An override that does not apply is otherwise
+  // indistinguishable from one that was never staged, and the boot option set
+  // this early in BDS is not what `efibootmgr` shows from the OS -- it predates
+  // EfiBootManagerRefreshAllBootOption(), so auto-created disk entries may not
+  // exist yet. Cheap: this only runs when the BMC has actually staged a target.
+  //
+  for (Index = 0; Index < OptionCount; Index++) {
+    DEBUG ((
+      DEBUG_ERROR,
+      "NucRedfishSync:   Boot%04x \"%s\" attr=0x%x%a%a\n",
+      Options[Index].OptionNumber,
+      (Options[Index].Description != NULL) ? Options[Index].Description : L"",
+      Options[Index].Attributes,
+      OptionHasNode (&Options[Index], MEDIA_DEVICE_PATH, MEDIA_HARDDRIVE_DP) ? " [HD]" : "",
+      OptionHasNode (&Options[Index], MEDIA_DEVICE_PATH, MEDIA_PIWG_FW_FILE_DP) ? " [FvFile]" : ""
+      ));
+  }
+
   for (Index = 0; Index < OptionCount; Index++) {
     if (AsciiStrCmp (Target, "BiosSetup") == 0) {
       //
       // The setup UI (UiApp) is the boot option BDS tags as an application.
       //
-      if ((Options[Index].Attributes & LOAD_OPTION_CATEGORY) == LOAD_OPTION_CATEGORY_APP) {
-        Found = TRUE;
-        Match = Index;
-        break;
-      }
-    } else if ((AsciiStrCmp (Target, "Pxe") == 0) || (AsciiStrCmp (Target, "UefiHttp") == 0)) {
+      Found = ((Options[Index].Attributes & LOAD_OPTION_CATEGORY) == LOAD_OPTION_CATEGORY_APP);
+    } else if (AsciiStrCmp (Target, "Pxe") == 0) {
       //
-      // Network boot options carry a messaging device path node (MAC/IPv4/URI).
+      // Network boot on this platform *is* iPXE: it is built into the payload
+      // FV (EDK2_ENABLE_IPXE) and registered by PlatformBootManagerLib as an FV
+      // file boot option, so its device path ends in a firmware-volume file
+      // node carrying PcdiPXEFile -- not in a MAC/IPv4 node the way a NIC's own
+      // UEFI PXE option would. Matching the GUID identifies it exactly, without
+      // depending on PcdiPXEOptionName, which is a display string.
       //
-      for (Node = Options[Index].FilePath;
-           !IsDevicePathEnd (Node);
-           Node = NextDevicePathNode (Node))
-      {
-        if (DevicePathType (Node) == MESSAGING_DEVICE_PATH) {
-          if ((DevicePathSubType (Node) == MSG_MAC_ADDR_DP) ||
-              (DevicePathSubType (Node) == MSG_IPv4_DP) ||
-              (DevicePathSubType (Node) == MSG_URI_DP))
-          {
-            Found = TRUE;
-            Match = Index;
-            break;
-          }
-        }
-      }
+      Found = OptionIsFvFile (&Options[Index], (EFI_GUID *)PcdGetPtr (PcdiPXEFile));
+    } else if (AsciiStrCmp (Target, "Hdd") == 0) {
+      //
+      // Local block storage, in whichever shape BDS has it at this point.
+      // See OptionIsDiskBoot().
+      //
+      Found = OptionIsDiskBoot (&Options[Index]);
+    }
 
-      if (Found) {
-        break;
-      }
+    if (Found) {
+      Match = Index;
+      break;
     }
   }
 

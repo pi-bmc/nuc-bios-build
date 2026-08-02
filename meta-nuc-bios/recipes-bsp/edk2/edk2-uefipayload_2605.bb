@@ -68,7 +68,7 @@ DEPENDS = "nasm-native acpica-native util-linux-native"
 # `convert` is missing.
 HOSTTOOLS_NONFATAL += "convert"
 DEPENDS += "${@'ipxe-efi' if d.getVar('EDK2_IPXE') == '1' else ''}"
-# DEPENDS alone only guarantees do_populate_sysroot; ipxe.efi is published by
+# DEPENDS alone only guarantees do_populate_sysroot; ipxe.rom is published by
 # do_deploy, so do_configure has to wait for that task specifically.
 do_configure[depends] += "${@'ipxe-efi:do_deploy' if d.getVar('EDK2_IPXE') == '1' else ''}"
 
@@ -224,11 +224,18 @@ do_configure() {
     fi
 
     # --- iPXE (coreboot's 'ipxe_rom' target) ---------------------------------
-    # Note the rename: built with IPXE_BUILD_EFI the .rom output IS a PE
-    # binary, and UefiPayloadPkg.fdf references it as NetworkDrivers/ipxe.efi.
+    # Byte-for-byte the same step:
+    #
+    #   cp $(top)/payloads/external/iPXE/ipxe/ipxe.rom \
+    #      $(EDK2_PATH)/UefiPayloadPkg/NetworkDrivers/ipxe.efi
+    #
+    # The rename is coreboot's, not ours: ipxe.rom is the generic name its iPXE
+    # Makefile gives whichever target it built, and with CONFIG_IPXE_BUILD_EFI
+    # that target is bin-x86_64-efi-sb/ipxe.efi -- a PE, which is what
+    # UefiPayloadPkg.fdf expects at NetworkDrivers/ipxe.efi.
     if [ "${EDK2_IPXE}" = "1" ]; then
         install -d ${S}/UefiPayloadPkg/NetworkDrivers
-        install -m 0644 ${DEPLOY_DIR_IMAGE}/ipxe.efi \
+        install -m 0644 ${DEPLOY_DIR_IMAGE}/ipxe.rom \
             ${S}/UefiPayloadPkg/NetworkDrivers/ipxe.efi
     fi
 

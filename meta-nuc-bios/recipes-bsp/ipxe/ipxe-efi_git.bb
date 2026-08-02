@@ -1,14 +1,22 @@
-SUMMARY = "iPXE UEFI PCI option ROM for the onboard Intel I218-V (NUC5i7RYH)"
-DESCRIPTION = "Builds bin-x86_64-efi/<vid><did>.efirom -- a UEFI PCI option \
-ROM carrying iPXE's 'intel' driver for the NUC5i7RYH's I218-V LOM \
-(8086:15a1; iPXE lists it as 'i218v-2'). coreboot adds this to CBFS as \
-pci<vid>,<did>.rom via CONFIG_PXE_ROM; UefiPayloadPkg's PciBusDxe dispatches \
-it off the device's expansion-ROM path and it installs an \
-EFI_SIMPLE_NETWORK_PROTOCOL -- the SNP the payload's NetworkPkg stack \
-(NETWORK_ENABLE, set in edk2-uefipayload) binds for UEFI PXE. The LOM is \
-only present at all because the coreboot recipe's refcode GbE-enable patch \
-(COREBOOT_REFCODE_GBE_PATCH=1) flips the Broadwell refcode's GbE-disable \
-byte -- without it there is no NIC for this ROM to drive."
+SUMMARY = "iPXE EFI application embedded in the edk2 payload firmware volume"
+DESCRIPTION = "Builds bin-x86_64-efi-sb/ipxe.efi and deploys it as ipxe.rom, \
+mirroring coreboot's payloads/external/iPXE + payloads/external/edk2 pipeline: \
+that iPXE Makefile copies whichever target it built to ipxe.rom, and the edk2 \
+Makefile's ipxe_rom target then copies ipxe/ipxe.rom to \
+UefiPayloadPkg/NetworkDrivers/ipxe.efi, where UefiPayloadPkg.fdf picks it up as \
+an FFS in the DXE volume. edk2-uefipayload does the same copy and passes the \
+matching -D NETWORK_IPXE=TRUE and PcdiPXEOptionName, which is what makes \
+PlatformBootManagerLib register the boot option. \
+\
+The -sb (secure boot) variant is what coreboot builds for the EFI target. It \
+restricts the driver set to DRIVERS_SECBOOT and asserts at build time that every \
+included file carries FILE_SECBOOT() -- no signing keys involved. The NUC's \
+I218-V is unaffected: drivers/net/intel.c declares FILE_SECBOOT(PERMITTED). It \
+suits this payload, which builds with SECURE_BOOT_ENABLE=TRUE. \
+\
+The LOM exists at all only because the coreboot recipe's refcode GbE-enable \
+patch (COREBOOT_REFCODE_GBE_PATCH=1) flips the Broadwell refcode's GbE-disable \
+byte -- without it there is no NIC for iPXE to drive."
 HOMEPAGE = "https://ipxe.org"
 
 # iPXE is GPL-2.0-or-later with the UBDL (UEFI Binary Distribution License)
@@ -31,8 +39,8 @@ inherit deploy
 # the target sysroot.
 INHIBIT_DEFAULT_DEPS = "1"
 
-# Host-built like coreboot's cbfstool/blob tooling: the .efirom is an
-# x86_64 UEFI artifact regardless of the build host, and this build host is
+# Host-built like coreboot's cbfstool/blob tooling: ipxe.efi is an x86_64 UEFI
+# artifact regardless of the build host, and this build host is
 # x86_64, so the BUILD compiler produces it directly. iPXE also needs perl
 # and binutils (objcopy/ld) on the build host -- add them to HOSTTOOLS if a
 # minimal builder lacks them.
@@ -40,17 +48,14 @@ DEPENDS = ""
 
 do_configure[noexec] = "1"
 
-# Target NIC. CONFIRMED ON HARDWARE 2026-07-28: the UEFI shell's `pci` on this
-# unit reports 00:19.0 Ethernet controller = 8086:15A3, i.e. iPXE's "i218v-3"
-#     PCI_ROM ( 0x8086, 0x15a3, "i218v-3", "I218-V", INTEL_NO_PHY_RST )
-# NOT the 15a1 ("i218v-2") this recipe originally guessed. PciBusDxe matches
-# option ROMs by PCI id, so a 15a1 ROM is simply never dispatched for a 15a3
-# device -- the ROM lands in CBFS, nothing loads it, no SNP is produced and no
-# PXE boot option ever appears. COREBOOT_PXE_ROM_ID/COREBOOT_PXE_EFIROM in the
-# coreboot recipe must stay in step with this.
-IPXE_VID ??= "8086"
-IPXE_DID ??= "15a3"
-IPXE_ROM_FILE = "${IPXE_VID}${IPXE_DID}.efirom"
+# No PCI expansion ROM is built. It was, once, targeting the onboard NIC --
+# confirmed on hardware as 8086:15a3 ("i218v-3"), not the 15a1 this recipe first
+# guessed -- but that path never worked and cannot: coreboot's pci_rom_run()
+# returns early for anything that is not PCI_CLASS_DISPLAY_VGA, so a LOM's option
+# ROM in CBFS is never dispatched, and the I218-V has no physical expansion-ROM
+# BAR for PciBusDxe to find either. Confirmed on hardware 2026-07-28: no PXE boot
+# option appeared. coreboot's own edk2 path does not build one either; the FV
+# route below is the one that produces a working SNP.
 
 # iPXE source is fully vendored; no submodule fetch, so no network at compile.
 do_compile() {
@@ -59,44 +64,64 @@ do_compile() {
     # HOST_CC drives its own util/ tools (elf2efi, efirom).
     unset CC CXX CPP AS AR LD RANLIB STRIP OBJCOPY NM CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
 
-    # Two artifacts, for two different dispatch paths:
+    # The same target coreboot's payloads/external/iPXE builds when
+    # CONFIG_IPXE_BUILD_EFI is set.
     #
-    #   ipxe.efi     a plain UEFI driver, embedded in the payload's DXE
-    #                firmware volume as an FFS and dispatched by the DXE
-    #                dispatcher. Works regardless of PCI class -- this is the
-    #                path that actually produces an SNP on this board.
+    # coreboot also passes -fno-pic here (PXE_MAKE_OPTS, commented as working
+    # around relocation issues). That is NOT carried over: with this iPXE and
+    # this host gcc it causes the very problem it is meant to avoid. iPXE
+    # compiles with -fpie; appending -fno-pic wins and switches codegen to
+    # absolute addressing, so the link emits R_X86_64_32S and elf2efi cannot
+    # translate it into a PE relocation:
     #
-    #   <vid><did>.efirom  a PCI expansion ROM. Kept because it is cheap, but
-    #                NOT the working path: coreboot's pci_rom_run() returns
-    #                early for anything that is not PCI_CLASS_DISPLAY_VGA, so a
-    #                LOM's option ROM in CBFS is never loaded, and the I218-V
-    #                has no physical expansion-ROM BAR for PciBusDxe to find
-    #                either. Confirmed on hardware 2026-07-28: no PXE boot
-    #                option appeared.
+    #     ./util/elf2efi64 --subsystem=10 ... bin-x86_64-efi-sb/ipxe.efi
+    #     Unrecognised relocation type 11
+    #
+    # Whatever toolchain that flag helps, it is not this one -- coreboot builds
+    # iPXE with its own crossgcc.
+    # ASFLAGS is overridden rather than extended. iPXE appends --fatal-warnings
+    # to it (Makefile.housekeeping), and binutils 2.4x warns on the
+    # .note.GNU-stack declarations scattered through arch/x86/prefix/*.S:
+    #
+    #     arch/x86/prefix/mromprefix.S:44: Warning: ignoring incorrect section type for .note.GNU-stack
+    #     {standard input}: Error: 2 warnings, treating warnings as errors
+    #
+    # Those are 16-bit BIOS prefixes. An EFI-only image links none of them, but
+    # iPXE compiles every source under the platform's SRCDIRS, so one warning
+    # anywhere fails the build. EXTRA_ASFLAGS cannot help: it is appended before
+    # --fatal-warnings, and --no-warn does not survive it. A command-line
+    # assignment does, because make lets it win over the makefile's `+=`.
+    #
+    # The value reproduces what the build otherwise computes (--64 from
+    # arch/x86_64, --divide from WORKAROUND_ASFLAGS) minus --fatal-warnings. If
+    # iPXE ever adds another workaround flag it would be dropped here, hence the
+    # explicit note -- check `as` invocations in the log if assembly misbehaves.
+    #
+    # coreboot does not hit this because it builds iPXE with its own crossgcc
+    # toolchain, which carries an older binutils.
     oe_runmake -C ${S}/src \
-        bin-x86_64-efi/ipxe.efi \
-        bin-x86_64-efi/${IPXE_ROM_FILE} \
+        bin-x86_64-efi-sb/ipxe.efi \
         CROSS_COMPILE="" \
         HOST_CC="${BUILD_CC}" \
+        ASFLAGS="--64 --divide" \
         V=1
 
-    [ -s "${S}/src/bin-x86_64-efi/ipxe.efi" ] || \
-        bbfatal "iPXE produced no ipxe.efi -- check the build log"
-    [ -s "${S}/src/bin-x86_64-efi/${IPXE_ROM_FILE}" ] || \
-        bbfatal "iPXE produced no ${IPXE_ROM_FILE} -- check the NIC PCI id (IPXE_DID) and the build log"
+    [ -s "${S}/src/bin-x86_64-efi-sb/ipxe.efi" ] || \
+        bbfatal "iPXE produced no bin-x86_64-efi-sb/ipxe.efi -- check the build log"
 }
 
 do_deploy() {
     install -d ${DEPLOYDIR}
-    # edk2-uefipayload stages this into UefiPayloadPkg/NetworkDrivers/.
-    install -m 0644 ${S}/src/bin-x86_64-efi/ipxe.efi ${DEPLOYDIR}/ipxe.efi
-    install -m 0644 ${S}/src/bin-x86_64-efi/${IPXE_ROM_FILE} \
-        ${DEPLOYDIR}/${IPXE_ROM_FILE}
+    # Deployed under coreboot's name for this artifact: its iPXE Makefile copies
+    # whichever target it built to ipxe.rom, EFI or legacy option ROM alike, and
+    # the edk2 Makefile consumes ipxe.rom. The contents here are a PE, and
+    # edk2-uefipayload installs it as NetworkDrivers/ipxe.efi accordingly.
+    install -m 0644 ${S}/src/bin-x86_64-efi-sb/ipxe.efi ${DEPLOYDIR}/ipxe.rom
 }
 
 addtask deploy after do_compile
 
 do_install[noexec] = "1"
 
-# Sanity: this ROM is meaningless off its target machine.
+# Sanity: this build is meaningless off its target machine.
 COMPATIBLE_MACHINE = "nuc5i7ryh"

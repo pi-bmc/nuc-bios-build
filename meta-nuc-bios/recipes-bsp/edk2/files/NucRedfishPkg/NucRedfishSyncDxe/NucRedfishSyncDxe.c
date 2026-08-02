@@ -21,7 +21,8 @@
                                        0/1) and boot progress to the BMC, which
                                        otherwise has no in-band view of it.
     3. GET  /redfish/v1/Systems/1   -- reads back the BMC's requested one-time
-                                       boot override and applies it as BootNext.
+                                       boot override, acknowledges it, and boots
+                                       the matching option in this same boot.
 
   Everything here is fail-open: an unreachable or unhappy BMC must never stop the
   host from booting, so every failure is logged and returns EFI_SUCCESS.
@@ -217,67 +218,57 @@ OptionIsDiskBoot (
 }
 
 /**
-  Apply a Redfish BootSourceOverrideTarget as a one-time BootNext.
-
-  BY DESIGN, the override takes effect on the boot *after* the one that fetched
-  it -- this is not a bug to be worked around at this layer. BdsEntry caches
-  BootNext before it calls any PlatformBootManagerLib API, and says why:
-
-      // Cache the "BootNext" NV variable before calling any PlatformBootManagerLib
-      // APIs. This could avoid the "BootNext" set by PlatformBootManagerLib be
-      // consumed in this boot.
-      -- MdeModulePkg/Universal/BdsDxe/BdsEntry.c
-
-  Anything that runs during BDS -- which includes this driver, because it cannot
-  run until discovery has configured REST EX over a connected controller -- is
-  on the far side of that snapshot. Verified on hardware 2026-07-30: staging
-  BiosSetup/Once left BootNext=Boot0000 set after a boot that went to the OS,
-  and the next boot landed in the Boot Manager.
-
-  Same-boot semantics would require the whole exchange to happen before BDS,
-  i.e. connecting the USB host controller, the ECM function, SNP, IP4 and REST
-  EX by hand at End-of-DXE. That is a much larger change and it lengthens every
-  boot, including those where the BMC has nothing staged. Staging a target and
-  then power-cycling -- the usual OOB flow -- is unaffected.
+  Find the boot option matching a Redfish BootSourceOverrideTarget.
 
   Redfish names boot *classes* ("Pxe", "Hdd", "BiosSetup"); UEFI has numbered
   Boot#### options. The mapping is done by scanning the boot options this
   firmware already built and matching on the attributes BDS itself uses --
-  LOAD_OPTION_CATEGORY_APP for the setup UI, and the device path's messaging
-  type for network options -- rather than on description text, which is
-  localised and unstable.
+  LOAD_OPTION_CATEGORY_APP for the setup UI, the iPXE FFS GUID for network boot,
+  and storage device path nodes for local disks -- rather than on description
+  text, which is localised and unstable.
 
-  @param[in] Target  Redfish BootSourceOverrideTarget value.
+  This only matches; it has no side effects, so the caller can acknowledge the
+  request to the BMC before doing anything that might not return. See
+  ApplyMatchedOption().
 
-  @retval EFI_SUCCESS    BootNext was set.
+  On success the caller owns *Options and must release it with
+  EfiBootManagerFreeLoadOptions().
+
+  @param[in]  Target       Redfish BootSourceOverrideTarget value.
+  @param[out] Options      Boot option array the match indexes into.
+  @param[out] OptionCount  Number of entries in *Options.
+  @param[out] Match        Index of the matching option.
+
+  @retval EFI_SUCCESS    A boot option matched.
   @retval EFI_NOT_FOUND  No boot option matched the requested class.
 **/
 STATIC
 EFI_STATUS
-ApplyBootOverride (
-  IN CONST CHAR8  *Target
+FindBootOverrideOption (
+  IN  CONST CHAR8                    *Target,
+  OUT EFI_BOOT_MANAGER_LOAD_OPTION   **Options,
+  OUT UINTN                          *OptionCount,
+  OUT UINTN                          *Match
   )
 {
-  EFI_BOOT_MANAGER_LOAD_OPTION  *Options;
-  UINTN                         OptionCount;
-  UINTN                         Index;
-  UINTN                         Match;
-  BOOLEAN                       Found;
-  EFI_STATUS                    Status;
-  UINT16                        BootNext;
+  UINTN    Index;
+  BOOLEAN  Found;
+
+  *Options     = NULL;
+  *OptionCount = 0;
+  *Match       = 0;
 
   if ((Target == NULL) || (AsciiStrCmp (Target, "None") == 0)) {
     return EFI_NOT_FOUND;
   }
 
-  Options = EfiBootManagerGetLoadOptions (&OptionCount, LoadOptionTypeBoot);
-  if ((Options == NULL) || (OptionCount == 0)) {
+  *Options = EfiBootManagerGetLoadOptions (OptionCount, LoadOptionTypeBoot);
+  if ((*Options == NULL) || (*OptionCount == 0)) {
     DEBUG ((DEBUG_ERROR, "NucRedfishSync: no boot options to override\n"));
     return EFI_NOT_FOUND;
   }
 
   Found = FALSE;
-  Match = 0;
 
   //
   // Dump the candidates. An override that does not apply is otherwise
@@ -286,24 +277,24 @@ ApplyBootOverride (
   // EfiBootManagerRefreshAllBootOption(), so auto-created disk entries may not
   // exist yet. Cheap: this only runs when the BMC has actually staged a target.
   //
-  for (Index = 0; Index < OptionCount; Index++) {
+  for (Index = 0; Index < *OptionCount; Index++) {
     DEBUG ((
       DEBUG_ERROR,
       "NucRedfishSync:   Boot%04x \"%s\" attr=0x%x%a%a\n",
-      Options[Index].OptionNumber,
-      (Options[Index].Description != NULL) ? Options[Index].Description : L"",
-      Options[Index].Attributes,
-      OptionHasNode (&Options[Index], MEDIA_DEVICE_PATH, MEDIA_HARDDRIVE_DP) ? " [HD]" : "",
-      OptionHasNode (&Options[Index], MEDIA_DEVICE_PATH, MEDIA_PIWG_FW_FILE_DP) ? " [FvFile]" : ""
+      (*Options)[Index].OptionNumber,
+      ((*Options)[Index].Description != NULL) ? (*Options)[Index].Description : L"",
+      (*Options)[Index].Attributes,
+      OptionHasNode (&(*Options)[Index], MEDIA_DEVICE_PATH, MEDIA_HARDDRIVE_DP) ? " [HD]" : "",
+      OptionHasNode (&(*Options)[Index], MEDIA_DEVICE_PATH, MEDIA_PIWG_FW_FILE_DP) ? " [FvFile]" : ""
       ));
   }
 
-  for (Index = 0; Index < OptionCount; Index++) {
+  for (Index = 0; Index < *OptionCount; Index++) {
     if (AsciiStrCmp (Target, "BiosSetup") == 0) {
       //
       // The setup UI (UiApp) is the boot option BDS tags as an application.
       //
-      Found = ((Options[Index].Attributes & LOAD_OPTION_CATEGORY) == LOAD_OPTION_CATEGORY_APP);
+      Found = (((*Options)[Index].Attributes & LOAD_OPTION_CATEGORY) == LOAD_OPTION_CATEGORY_APP);
     } else if (AsciiStrCmp (Target, "Pxe") == 0) {
       //
       // Network boot on this platform *is* iPXE: it is built into the payload
@@ -313,48 +304,161 @@ ApplyBootOverride (
       // UEFI PXE option would. Matching the GUID identifies it exactly, without
       // depending on PcdiPXEOptionName, which is a display string.
       //
-      Found = OptionIsFvFile (&Options[Index], (EFI_GUID *)PcdGetPtr (PcdiPXEFile));
+      Found = OptionIsFvFile (&(*Options)[Index], (EFI_GUID *)PcdGetPtr (PcdiPXEFile));
     } else if (AsciiStrCmp (Target, "Hdd") == 0) {
       //
       // Local block storage, in whichever shape BDS has it at this point.
       // See OptionIsDiskBoot().
       //
-      Found = OptionIsDiskBoot (&Options[Index]);
+      Found = OptionIsDiskBoot (&(*Options)[Index]);
     }
 
     if (Found) {
-      Match = Index;
+      *Match = Index;
       break;
     }
   }
 
   if (!Found) {
     DEBUG ((DEBUG_ERROR, "NucRedfishSync: no boot option matches target '%a'\n", Target));
-    EfiBootManagerFreeLoadOptions (Options, OptionCount);
+    EfiBootManagerFreeLoadOptions (*Options, *OptionCount);
+    *Options     = NULL;
+    *OptionCount = 0;
     return EFI_NOT_FOUND;
   }
 
-  BootNext = Options[Match].OptionNumber;
+  DEBUG ((
+    DEBUG_ERROR,
+    "NucRedfishSync: boot override '%a' -> Boot%04x \"%s\"\n",
+    Target,
+    (*Options)[*Match].OptionNumber,
+    (*Options)[*Match].Description != NULL ? (*Options)[*Match].Description : L"(no description)"
+    ));
 
-  Status = gRT->SetVariable (
-                  L"BootNext",
-                  &gEfiGlobalVariableGuid,
-                  EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,
-                  sizeof (BootNext),
-                  &BootNext
-                  );
+  return EFI_SUCCESS;
+}
+
+/**
+  Act on a matched boot override, in this boot if the call context allows it.
+
+  Boots the option directly rather than staging BootNext. BdsEntry caches
+  BootNext before calling any PlatformBootManagerLib API, specifically so that a
+  BootNext set during BDS is not consumed in the same boot:
+
+      // Cache the "BootNext" NV variable before calling any PlatformBootManagerLib
+      // APIs. This could avoid the "BootNext" set by PlatformBootManagerLib be
+      // consumed in this boot.
+      -- MdeModulePkg/Universal/BdsDxe/BdsEntry.c
+
+  This driver runs on the far side of that snapshot -- it cannot run until
+  discovery has configured REST EX over a connected controller -- so staging
+  BootNext costs a whole boot, in every flow including power-cycling a host that
+  was off. EfiBootManagerBoot() has no such problem, and the timing is right:
+  measured on hardware, this driver runs during BdsWait, after GraphicsConsoleDxe
+  has started (so the option gets a console) and before BDS selects anything from
+  BootOrder.
+
+  Falling back is automatic. EfiBootManagerBoot() connects the device path and
+  expands short-form paths itself, and on every failure path it records
+  Option->Status and returns rather than resetting -- so if the target will not
+  boot, or is an application that exits, control comes back here and BDS carries
+  on with its normal BootOrder.
+
+  The TPL guard is the one real constraint. StartImage() requires
+  TPL_APPLICATION, and this driver is invoked from RedfishConfigHandlerDriver's
+  service-discovered notification, whose TPL depends on how the discovery event
+  was signalled. Booting above TPL_APPLICATION would be a spec violation, so in
+  that case fall back to staging BootNext -- one boot late, but correct.
+
+  @param[in] Option  The matched boot option. Not freed here.
+
+  @retval EFI_SUCCESS  The option was booted, or BootNext was staged.
+**/
+STATIC
+EFI_STATUS
+ApplyMatchedOption (
+  IN EFI_BOOT_MANAGER_LOAD_OPTION  *Option
+  )
+{
+  EFI_STATUS  Status;
+  EFI_TPL     Tpl;
+  UINT16      BootNext;
+
+  //
+  // No direct "get current TPL" exists; raising to the ceiling and immediately
+  // restoring reports what it was.
+  //
+  Tpl = gBS->RaiseTPL (TPL_HIGH_LEVEL);
+  gBS->RestoreTPL (Tpl);
+
+  if (Tpl == TPL_APPLICATION) {
+    DEBUG ((
+      DEBUG_ERROR,
+      "NucRedfishSync: booting Boot%04x now (same boot)\n",
+      Option->OptionNumber
+      ));
+
+    EfiBootManagerBoot (Option);
+
+    //
+    // Only reached if the option failed or was an application that exited.
+    //
+    DEBUG ((
+      DEBUG_ERROR,
+      "NucRedfishSync: Boot%04x returned - %r, falling through to BootOrder\n",
+      Option->OptionNumber,
+      Option->Status
+      ));
+    return EFI_SUCCESS;
+  }
+
+  BootNext = Option->OptionNumber;
+  Status   = gRT->SetVariable (
+                    L"BootNext",
+                    &gEfiGlobalVariableGuid,
+                    EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,
+                    sizeof (BootNext),
+                    &BootNext
+                    );
 
   DEBUG ((
     DEBUG_ERROR,
-    "NucRedfishSync: boot override '%a' -> Boot%04x \"%s\" - %r\n",
-    Target,
+    "NucRedfishSync: TPL %d > TPL_APPLICATION, cannot StartImage here; "
+    "staged BootNext=Boot%04x - %r\n",
+    (UINTN)Tpl,
     BootNext,
-    Options[Match].Description != NULL ? Options[Match].Description : L"(no description)",
     Status
     ));
 
-  EfiBootManagerFreeLoadOptions (Options, OptionCount);
-  return Status;
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  //
+  // Reset so the request is honoured now rather than sitting until whenever the
+  // host next reboots. BdsEntry has already cached BootNext for this boot, so
+  // without this the host would carry on to its default target and the operator
+  // would have to power-cycle it themselves.
+  //
+  // Safe to loop on: the BMC's override was cleared and acknowledged before this
+  // point (HandleBootOverride refuses to get here otherwise), so the next boot
+  // finds nothing staged and consumes BootNext normally.
+  //
+  // EfiResetCold, not Warm, though on this platform it makes no difference:
+  // UefiPayloadPkg's ResetSystemLib writes mAcpiBoardInfo.ResetValue for both,
+  // and that comes from the FADT -- which mainboard_fill_fadt() sets to
+  // FULL_RST|RST_CPU|SYS_RST (0x0e). A soft reset (0x06) leaves the platform
+  // partially powered and Broadwell raminit cannot get back through it; that was
+  // the warm-reboot hang fixed on 2026-07-30. This path depends on that fix.
+  //
+  DEBUG ((DEBUG_ERROR, "NucRedfishSync: resetting to consume BootNext\n"));
+  gRT->ResetSystem (EfiResetCold, EFI_SUCCESS, 0, NULL);
+
+  //
+  // Not reached.
+  //
+  CpuDeadLoop ();
+  return EFI_SUCCESS;
 }
 
 /**
@@ -375,13 +479,16 @@ HandleBootOverride (
   IN REDFISH_RESPONSE  *Response
   )
 {
-  EDKII_JSON_VALUE   Root;
-  EDKII_JSON_VALUE   Boot;
-  EDKII_JSON_VALUE   Value;
-  CONST CHAR8        *Target;
-  CONST CHAR8        *Enabled;
-  EFI_STATUS         Status;
-  REDFISH_RESPONSE   AckResponse;
+  EDKII_JSON_VALUE              Root;
+  EDKII_JSON_VALUE              Boot;
+  EDKII_JSON_VALUE              Value;
+  CONST CHAR8                   *Target;
+  CONST CHAR8                   *Enabled;
+  EFI_STATUS                    Status;
+  REDFISH_RESPONSE              AckResponse;
+  EFI_BOOT_MANAGER_LOAD_OPTION  *Options;
+  UINTN                         OptionCount;
+  UINTN                         Match;
 
   if ((Response == NULL) || (Response->Payload == NULL)) {
     return;
@@ -414,13 +521,19 @@ HandleBootOverride (
     return;
   }
 
-  if (EFI_ERROR (ApplyBootOverride (Target))) {
+  if (EFI_ERROR (FindBootOverrideOption (Target, &Options, &OptionCount, &Match))) {
     return;
   }
 
   //
-  // Clear the override so it is genuinely one-shot even if the host resets
-  // before BDS consumes BootNext.
+  // Acknowledge BEFORE booting, not after. ApplyMatchedOption() boots the target
+  // in this boot where it can, and a successful boot never returns -- so an
+  // acknowledgement placed after it would never be sent on exactly the runs that
+  // worked. The BMC would still show the override staged, the next boot would
+  // apply it again, and the host would be pinned to that target forever.
+  //
+  // Ordering it this way also keeps the override genuinely one-shot if the host
+  // resets between here and the boot attempt.
   //
   ZeroMem (&AckResponse, sizeof (AckResponse));
   Status = RedfishHttpPatchResource (
@@ -431,6 +544,24 @@ HandleBootOverride (
              );
   LogResult ("PATCH(clear-override)", NUC_REDFISH_SYSTEM_URI, Status, &AckResponse);
   RedfishHttpFreeResponse (&AckResponse);
+
+  if (EFI_ERROR (Status)) {
+    //
+    // Refuse to boot a request we could not acknowledge: the BMC still has it
+    // staged, so honouring it now would repeat on every subsequent boot.
+    //
+    DEBUG ((
+      DEBUG_ERROR,
+      "NucRedfishSync: not applying override, BMC did not accept the clear - %r\n",
+      Status
+      ));
+    EfiBootManagerFreeLoadOptions (Options, OptionCount);
+    return;
+  }
+
+  ApplyMatchedOption (&Options[Match]);
+
+  EfiBootManagerFreeLoadOptions (Options, OptionCount);
 }
 
 /**

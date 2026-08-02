@@ -173,26 +173,41 @@ REST EX over a connected controller. So staging
 `BootSourceOverrideTarget` + `Once` takes effect on the *next* boot. Verified
 2026-07-30.
 
-This costs a boot in **every** flow, including power-cycling a host that was
-off: that first boot is the one that reads the override and writes `BootNext`
-(and clears the override on the BMC), so it still boots the default target, and
-only the boot after it honours the request. An earlier version of this note
-claimed stage-then-power-cycle was unaffected — it is not. Budget two boots, or
-watch for `boot override '<target>' -> Boot000X` in `cbmem -c` to know the
-request has been armed rather than applied.
+**So the driver stages `BootNext` and then resets immediately**
+(`ApplyMatchedOption`). The operator stages a target and issues one reboot; the
+firmware reads it, acknowledges it, arms `BootNext`, resets, and the next boot
+lands on the target. Verified 2026-08-02: one `systemctl reboot` with `Pxe`
+staged produced `[Bds] Expand Fv(...)/FvFile(B68653C7-…)` — iPXE — followed by
+a fall-through to the NVMe when iPXE exited.
 
-It is not impossible to apply in the same boot, just not free. Three options,
-cheapest last:
+That reset is only safe because of the FADT fix below. UefiPayloadPkg's
+`ResetSystemLib` writes `mAcpiBoardInfo.ResetValue` for both `EfiResetCold` and
+`EfiResetWarm`, and that value comes from the FADT — which is now `0x0e`. With
+the old `0x06` this path would have hung in raminit exactly like
+`systemctl reboot` did.
 
-- Run the exchange before the snapshot, at End-of-DXE — needs USB/ECM/SNP/IP4/
-  HTTP/REST EX connected by hand, which lengthens every boot including the ones
-  with nothing staged.
-- Set `BootNext` and immediately reset — reliable, but spends a reboot anyway.
-- Skip `BootNext` entirely: once `ApplyBootOverride` has matched an option, call
-  `EfiBootManagerBoot()` on it directly. That is same-boot by construction and
-  costs nothing when no override is staged. The trade is that it bypasses BDS's
-  own ordering and needs explicit handling for "the option failed, fall through
-  to the normal boot order".
+**Booting the option directly does not work from here**, which is worth knowing
+before trying it again. The obvious cheap fix is to skip `BootNext` and call
+`EfiBootManagerBoot()` on the matched option — same boot, no reset. But
+`StartImage()` requires `TPL_APPLICATION`, and this driver is invoked from
+`RedfishConfigHandlerDriver`'s service-discovered *event notification*. Measured
+on hardware: `TPL 8` (`TPL_CALLBACK`). Nor can it be deferred to a better
+context — UEFI only permits event notify TPLs of `TPL_CALLBACK` or
+`TPL_NOTIFY`, so no callback ever runs at `TPL_APPLICATION`. The code keeps the
+`EfiBootManagerBoot()` path behind a TPL check anyway, so it becomes live for
+free if this ever moves to a caller at application level.
+
+The remaining same-boot option, if the extra reset ever becomes intolerable, is
+to run the whole exchange before BdsEntry's snapshot at End-of-DXE — connecting
+USB/ECM/SNP/IP4/HTTP/REST EX by hand, which lengthens *every* boot including the
+ones with nothing staged.
+
+**Acknowledge before booting, not after.** `HandleBootOverride` clears the
+override on the BMC and checks the PATCH succeeded *before* applying it, and
+bails if it did not. A successful boot never returns, so an acknowledgement
+placed after the boot would never be sent on exactly the runs that worked — the
+BMC would still show the override staged and the host would be pinned to that
+target on every subsequent boot.
 
 ### Warm reboot: the FADT must advertise a *full* CF9 reset
 

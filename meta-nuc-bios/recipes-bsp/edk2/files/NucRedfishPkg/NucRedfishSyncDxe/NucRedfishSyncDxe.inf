@@ -51,6 +51,7 @@
 [Protocols]
   gEdkIIRedfishConfigHandlerProtocolGuid    ## PRODUCES
   gEfiSmbiosProtocolGuid                    ## CONSUMES
+  gEfiSimpleNetworkProtocolGuid             ## CONSUMES
 
 [Guids]
   gEfiGlobalVariableGuid                    ## CONSUMES
@@ -59,6 +60,11 @@
   # Identifies the iPXE FFS in the payload FV, so a Redfish "Pxe" boot override
   # can be matched to the boot option PlatformBootManagerLib registers for it.
   gUefiPayloadPkgTokenSpaceGuid.PcdiPXEFile ## CONSUMES
+
+  # The BMC host-interface MAC, used to pick that NIC out of the SNP handles
+  # and disconnect it once the exchange is done. Same address SMBIOS type 42
+  # advertises.
+  gNucRedfishPkgTokenSpaceGuid.PcdNucRedfishEcmMac ## CONSUMES
 
 [Depex]
   gEfiSmbiosProtocolGuid

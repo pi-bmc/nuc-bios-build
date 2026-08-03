@@ -307,6 +307,36 @@ only the USBIO pseudo-HCD (`USB_HCD_USBIO`, commented out upstream as "Very
 slow"); its absence says nothing about the real host controller drivers. That
 inference cost a build-and-flash cycle here.
 
+### Two fixes that look obvious and do not work
+
+Both were tried on hardware 2026-08-02. Don't spend the cycles again.
+
+**Disconnecting the NIC in firmware does not hide it from iPXE.**
+`NucRedfishSyncDxe` does call `DisconnectController()` on the host-interface NIC
+when the exchange finishes, and it succeeds — but iPXE re-enumerates the USB bus
+with its own drivers and binds the gadget regardless:
+
+```text
+NucRedfishSync: disconnected host-interface NIC DA:A7:62:23:3E:F5 - Success
+... net0mac=da:a7:62:23:3e:f5 net0chip=cdc-ecm     <- iPXE, with snpnet AND ecm linked
+```
+
+That test settles the question of whether iPXE consumes UEFI's network stack for
+this device: it does not. The disconnect stays in as hygiene only.
+
+**The PCI addresses cannot be reordered.** `device pci 14.0` (xHCI) and
+`19.0` (GbE) in `devicetree.cb` *describe* fixed Wildcat Point-LP PCH functions.
+coreboot enables or disables them; it cannot renumber silicon, so any ascending
+PCI scan reaches xHCI — and therefore the gadget — before the LOM.
+
+**What is left.** For the payload's own iPXE, the driver-set fix above is
+complete and verified. For a chainloaded binary, `dhcp` fails on net0 and falls
+through to net1, which works — at the cost of one DHCP timeout. Removing the
+gadget from the bus mid-boot (BMC-side detach) was tried and abandoned: it needs
+a gadget rebind that races BDS launching the boot option, and it left a
+warm-rebooted host with no host interface at all. Prefer fixing the boot script
+(`dhcp net1`, or select on `${netN/chip}`) over firmware or gadget games.
+
 ### Reading iPXE's device list without a console
 
 There is no UART and the KVM cannot capture the firmware phase, so build a

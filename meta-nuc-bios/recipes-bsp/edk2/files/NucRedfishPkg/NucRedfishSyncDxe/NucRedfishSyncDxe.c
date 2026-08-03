@@ -6,7 +6,7 @@
   CDC-ECM NIC and configures REST EX, and RedfishConfigHandlerDriver signals that
   a service is available. Nothing then talks to it. The drivers that would --
   edk2-redfish-client's feature layer -- are not buildable against this tree (see
-  the note at the top of files/wire-redfish.py), so on a stock RedfishPkg build
+  the note above SRC_URI in edk2-uefipayload_2605.bb), so on a stock RedfishPkg build
   the whole chain completes and BDS boots the OS without a single HTTP request.
   Confirmed on hardware 2026-07-29: cbmem showed "Redfish service ... is
   discovered!" immediately followed by "[Bds]BdsWait", and the BMC logged nothing.
@@ -36,6 +36,13 @@
 #include <Library/JsonLib.h>
 #include <Library/PcdLib.h>
 #include <Library/UefiBootManagerLib.h>
+#include <Protocol/SimpleNetwork.h>
+
+//
+// Length of an Ethernet MAC. Spelled out rather than pulled from NetLib's
+// NET_ETHER_ADDR_LEN, which would add a library dependency for one constant.
+//
+#define NUC_REDFISH_MAC_LEN  6
 
 STATIC EFI_HANDLE  mImageHandle = NULL;
 STATIC BOOLEAN     mSyncDone    = FALSE;
@@ -565,6 +572,102 @@ HandleBootOverride (
 }
 
 /**
+  Tear down the UEFI driver stack on the BMC's host-interface NIC.
+
+  Once the exchange is done nothing in this boot has any business on the
+  management link, so tear the stack down rather than leaving a live
+  UEFI-visible network interface behind. DisconnectController() on the
+  SNP-producing handle unwinds everything above it -- SNP, IP4, HTTP, REST EX.
+
+  **This does not stop iPXE, and is not intended to.** Measured on hardware
+  2026-08-02 with an iPXE built with both snpnet and ecm linked, booted after
+  this ran successfully:
+
+      NucRedfishSync: disconnected host-interface NIC DA:A7:62:23:3E:F5 - Success
+      ... net0mac=da:a7:62:23:3e:f5 net0chip=cdc-ecm
+
+  iPXE builds its own xHCI/EHCI/UHCI drivers and re-enumerates the USB bus
+  itself rather than consuming UEFI's network stack, so it binds the gadget with
+  drivers/net/ecm.c no matter what state the UEFI drivers are in. It lands ahead
+  of the LOM because the xHCI controller sorts first in PCI order (00:14.0 vs
+  00:19.0), and those are fixed PCH function numbers that coreboot describes
+  rather than assigns. The payload's own iPXE is built without ecm/ncm for that
+  reason (see ipxe-efi_git.bb); a chainloaded binary falls through to the LOM
+  after net0's DHCP fails.
+
+  So this is hygiene, not a boot-path fix: it keeps the management link from
+  remaining an addressable UEFI interface for the rest of the boot.
+
+  Identified by MAC rather than by device path so it cannot catch the LOM: the
+  address is the same PcdNucRedfishEcmMac that SMBIOS type 42 advertises and
+  that the BMC derives on its side.
+
+  Best-effort throughout -- failing to disconnect must never stop the boot.
+**/
+STATIC
+VOID
+DisconnectHostInterface (
+  VOID
+  )
+{
+  EFI_STATUS                   Status;
+  EFI_HANDLE                   *Handles;
+  UINTN                        HandleCount;
+  UINTN                        Index;
+  EFI_SIMPLE_NETWORK_PROTOCOL  *Snp;
+  CONST UINT8                  *EcmMac;
+
+  EcmMac = (CONST UINT8 *)PcdGetPtr (PcdNucRedfishEcmMac);
+  if (EcmMac == NULL) {
+    return;
+  }
+
+  Handles     = NULL;
+  HandleCount = 0;
+
+  Status = gBS->LocateHandleBuffer (
+                  ByProtocol,
+                  &gEfiSimpleNetworkProtocolGuid,
+                  NULL,
+                  &HandleCount,
+                  &Handles
+                  );
+  if (EFI_ERROR (Status) || (Handles == NULL)) {
+    return;
+  }
+
+  for (Index = 0; Index < HandleCount; Index++) {
+    Status = gBS->HandleProtocol (
+                    Handles[Index],
+                    &gEfiSimpleNetworkProtocolGuid,
+                    (VOID **)&Snp
+                    );
+    if (EFI_ERROR (Status) || (Snp == NULL) || (Snp->Mode == NULL)) {
+      continue;
+    }
+
+    if (CompareMem (Snp->Mode->CurrentAddress.Addr, EcmMac, NUC_REDFISH_MAC_LEN) != 0) {
+      continue;
+    }
+
+    Status = gBS->DisconnectController (Handles[Index], NULL, NULL);
+    DEBUG ((
+      DEBUG_ERROR,
+      "NucRedfishSync: disconnected host-interface NIC %02x:%02x:%02x:%02x:%02x:%02x - %r\n",
+      EcmMac[0],
+      EcmMac[1],
+      EcmMac[2],
+      EcmMac[3],
+      EcmMac[4],
+      EcmMac[5],
+      Status
+      ));
+  }
+
+  FreePool (Handles);
+}
+
+/**
   Perform the host-interface exchange against the discovered Redfish service.
 
   @param[in] ServiceInfo  Discovered Redfish service information.
@@ -656,7 +759,10 @@ NucRedfishSync (
   }
 
   RedfishHttpFreeResponse (&Response);
+
   RedfishCleanupService (Service);
+
+  DisconnectHostInterface ();
 
   DEBUG ((DEBUG_ERROR, "NucRedfishSync: host interface exchange complete\n"));
 }

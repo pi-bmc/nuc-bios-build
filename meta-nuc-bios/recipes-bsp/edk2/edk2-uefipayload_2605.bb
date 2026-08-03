@@ -27,16 +27,43 @@ inherit deploy
 #                         oe-core's ovmf.
 #   edk2-platforms        Features/Intel/**; coreboot puts nine of its
 #                         subdirectories on PACKAGES_PATH (mirrored below).
-# edk2-redfish-client (RedfishClientPkg) is intentionally absent: it is the
-# BIOS attribute-sync layer, is not needed for initial sync, and does not build
-# against this fork's stale RedfishPkg. See the note at the top of
-# files/wire-redfish.py before adding it back.
+# edk2-redfish-client (RedfishClientPkg) is intentionally absent.
+#
+# It is the BIOS *attribute-sync* feature layer -- BiosDxe, BootOptionDxe and
+# the JSON converters -- which sits on top of a working host interface. It is
+# not needed for initial sync (discovery + RestEx + the type 42 record), and
+# neither NucRedfishHostInterfaceLib nor RedfishConfigDriver depends on it:
+# both list only RedfishPkg in their [Packages].
+#
+# It also does not build against this tree. The MrChromebox fork tracks
+# UefiPayloadPkg, not RedfishPkg, so its RedfishPkg lags upstream edk2 badly
+# regardless of the fork's HEAD date (2026-07-12):
+#
+#   RedfishClientPkg/Library/RedfishEventLib/RedfishEventLib.inf(39):
+#     error 4000: Value of Guid [gEdkIIRedfisEventRedfishInterfaceDisconnectionGuid]
+#     is not found under [Guids] section
+#
+# That GUID is declared by upstream RedfishPkg.dec; this fork's copy has no
+# RedfishEvent GUIDs at all. Re-adding the client layer therefore needs a
+# matched pair -- either a newer RedfishPkg (rebase the fork, or overlay
+# upstream RedfishPkg onto it) or an edk2-redfish-client revision old enough to
+# match. Pick the pair deliberately rather than by AUTOREV.
 SRC_URI = "gitsm://github.com/mrchromebox/edk2.git;protocol=https;branch=uefipayload_2605;name=edk2;destsuffix=git \
            git://github.com/tianocore/edk2-platforms.git;protocol=https;branch=master;name=platforms;destsuffix=edk2-platforms \
            file://NucRedfishPkg \
-           file://wire-redfish.py \
            file://bootsplash.bmp \
            "
+
+# The Redfish wiring is two ordinary patches rather than the scripted anchored
+# insertions this recipe used to run at do_configure. Both trees are pinned by
+# SRCREV, so context diffs are stable, and `patch` already refuses to apply a
+# hunk it cannot place -- which was the one property the script was written for.
+# NucRedfishPkg itself is still staged by do_configure: it is a whole package
+# copied into the tree, not a modification of one.
+SRC_URI += "${@' '.join([ \
+    'file://0001-UefiPayloadPkg-wire-in-the-Redfish-host-interface-sta.patch', \
+    'file://0002-UsbNetwork-assume-media-on-a-point-to-point-gadget.patch', \
+    ]) if d.getVar('EDK2_REDFISH') == '1' else ''}"
 
 # Branch head as of 2026-07-13. coreboot master defaults to this branch
 # (payloads/external/edk2/Kconfig: EDK2_TAG_OR_REV "origin/uefipayload_2605").
@@ -239,19 +266,7 @@ do_configure() {
             ${S}/UefiPayloadPkg/NetworkDrivers/ipxe.efi
     fi
 
-    # --- wire Redfish + the USB NIC into UefiPayloadPkg ----------------------
-    # Anchored insertions, each verified: the DSC/FDF already carry
-    # !include NetworkPkg/* lines at the right point in every section, so the
-    # Redfish equivalents go directly after them. The script refuses to guess
-    # -- a missing anchor is a hard error, the same philosophy as the coreboot
-    # recipe's refcode GbE patch.
-    if [ "${EDK2_REDFISH}" = "1" ]; then
-        python3 ${WORKDIR}/wire-redfish.py \
-            ${S}/UefiPayloadPkg/UefiPayloadPkg.dsc \
-            ${S}/UefiPayloadPkg/UefiPayloadPkg.fdf \
-            ${S}/MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/DriverBinding.c \
-            ${S}/MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/PxeFunction.c
-    fi
+    # Redfish wiring itself is applied by do_patch -- see the SRC_URI patches.
 }
 
 do_compile() {

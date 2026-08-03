@@ -6,9 +6,10 @@ Redfish service over a USB CDC-ECM link.
 **Two ways to load it, and the first is now the real one:**
 
 1. **Built into the payload** (current). `edk2-uefipayload_2605.bb` stages this
-   package into the tree and `wire-redfish.py` adds it to `UefiPayloadPkg`, so
-   the whole stack ships inside `coreboot-nuc5i7ryh.rom`. Nothing to register,
-   nothing to load by hand.
+   package into the tree and
+   `files/0001-UefiPayloadPkg-wire-in-the-Redfish-host-interface-sta.patch`
+   adds it to `UefiPayloadPkg`, so the whole stack ships inside
+   `coreboot-nuc5i7ryh.rom`. Nothing to register, nothing to load by hand.
 2. **Standalone `Driver####` drivers on the stock (locked) AMI BIOS** — the
    original approach, kept because it needs no flashing. See "Loading on the
    NUC" below; `NucRedfish.dsc` is that build.
@@ -26,7 +27,7 @@ Verified on hardware 2026-07-30: discovery completed
 and BDS then went straight to the OS loader without a single HTTP request,
 because nothing in the payload produces `EDKII_REDFISH_CONFIG_HANDLER_PROTOCOL`
 — that is edk2-redfish-client's job, and it does not build against this tree
-(see the note at the top of `files/wire-redfish.py`).
+(see the note above `SRC_URI` in `edk2-uefipayload_2605.bb`).
 
 `NucRedfishSyncDxe` produces that protocol and performs the exchange:
 

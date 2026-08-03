@@ -1,0 +1,56 @@
+From: nuc-bios-build <nbatkins@gmail.com>
+Subject: [PATCH] UsbNetwork: assume media on a point-to-point USB gadget
+
+NetworkCommon starts every NIC at CableDetect = 0 and only raises it when it
+catches a CDC NETWORK_CONNECTION/NETWORK_CONNECTED notification. Linux's f_ecm
+emits those only on link-state changes, and the enumeration-time one fires long
+before the UEFI driver binds -- so it is effectively never seen and the first
+Redfish request fails with EFI_NO_MEDIA.
+
+That model suits a dongle with an RJ45, where "no cable" is a real state worth
+reporting. It does not suit a point-to-point gadget, where enumeration *is* the
+proof of link: if the device is on the bus at all, the BMC is on the other end.
+
+So default it to 1, and stop NETWORK_DISCONNECT from clearing it -- a host
+reset makes f_ecm queue a disconnect that the freshly bound driver reads on the
+next boot, which would otherwise strand the link as unplugged for that whole
+boot (the matching CONNECTED having been emitted while nothing was listening).
+
+Upstream-Status: Inappropriate [embedded specific]
+Signed-off-by: nuc-bios-build <nbatkins@gmail.com>
+---
+diff --git a/MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/DriverBinding.c b/MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/DriverBinding.c
+index a2a5b82776..c297e13471 100644
+--- a/MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/DriverBinding.c
++++ b/MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/DriverBinding.c
+@@ -289,7 +289,7 @@ NetworkCommonDriverStart (
+ 
+   NicDevice->NicInfo.UsbEth         = UsbEth;
+   NicDevice->NicInfo.MaxSegmentSize = (UINT16)BulkDataSize;
+-  NicDevice->NicInfo.CableDetect    = 0;
++  NicDevice->NicInfo.CableDetect    = 1;  // NucRedfish: point-to-point ECM gadget, see wire-redfish.py
+   NicDevice->ReceiveBuffer          = ALIGN_POINTER ((VOID *)NicDevice, 4096);
+ 
+   CopyMem ((CHAR8 *)&(NicDevice->NicInfo.MacAddr), (CHAR8 *)&MacAddress, sizeof (MacAddress));
+diff --git a/MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/PxeFunction.c b/MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/PxeFunction.c
+index 049618b6c6..70b6c8942a 100644
+--- a/MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/PxeFunction.c
++++ b/MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/PxeFunction.c
+@@ -455,7 +455,7 @@ UndiInitialize (
+ 
+   if (Cdb->OpFlags == PXE_OPFLAGS_INITIALIZE_DETECT_CABLE) {
+     if ((Nic->Request.Request == USB_CDC_NETWORK_CONNECTION) && (Nic->Request.Value == NETWORK_DISCONNECT)) {
+-      Nic->CableDetect = 0;
++      Nic->CableDetect = 1;  // NucRedfish: link is point-to-point
+     } else if ((Nic->Request.Request == USB_CDC_NETWORK_CONNECTION) && (Nic->Request.Value == NETWORK_CONNECTED)) {
+       Nic->CableDetect = 1;
+     }
+@@ -1195,7 +1195,7 @@ UndiGetStatus (
+   }
+ 
+   if ((Nic->Request.Request == USB_CDC_NETWORK_CONNECTION) && (Nic->Request.Value == NETWORK_DISCONNECT)) {
+-    Nic->CableDetect = 0;
++    Nic->CableDetect = 1;  // NucRedfish: link is point-to-point
+   } else if ((Nic->Request.Request == USB_CDC_NETWORK_CONNECTION) && (Nic->Request.Value == NETWORK_CONNECTED)) {
+     Nic->CableDetect = 1;
+   }

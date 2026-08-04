@@ -1,7 +1,7 @@
 From 4bb790c2dd0a90e24099c153d6c4e4f9b5f22a8f Mon Sep 17 00:00:00 2001
 From: Patrick Rudolph <patrick.rudolph@9elements.com>
 Date: Tue, 8 Sep 2020 09:40:41 +0200
-Subject: [PATCH 01/23] UefiCpuPkg: Disable MTRR programming for UefiPayloadPkg
+Subject: [PATCH 01/24] UefiCpuPkg: Disable MTRR programming for UefiPayloadPkg
 
 The MTRRs have already been programmed by FSB.
 

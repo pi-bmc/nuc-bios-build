@@ -1,7 +1,7 @@
 From 7527f35cb3ecdb1820bb99392f108fc47824f225 Mon Sep 17 00:00:00 2001
 From: Sean Rhodes <sean@starlabs.systems>
 Date: Thu, 3 Feb 2022 21:36:56 +0000
-Subject: [PATCH 05/23] UefiPayloadPkg: Hookup Prioritize Internal build option
+Subject: [PATCH 05/24] UefiPayloadPkg: Hookup Prioritize Internal build option
 
 Hook PRIORITIZE_INTERNAL build option to PrioritizeInternal PCD.
 

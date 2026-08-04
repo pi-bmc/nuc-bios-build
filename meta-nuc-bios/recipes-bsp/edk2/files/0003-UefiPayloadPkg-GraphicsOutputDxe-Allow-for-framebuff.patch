@@ -1,7 +1,7 @@
 From 72f3343780313d5d92937888eda6666a78a1f4ff Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20Kope=C4=87?= <michal.kopec@3mdeb.com>
 Date: Thu, 2 May 2024 13:21:01 +0200
-Subject: [PATCH 03/23] UefiPayloadPkg/GraphicsOutputDxe: Allow for framebuffer
+Subject: [PATCH 03/24] UefiPayloadPkg/GraphicsOutputDxe: Allow for framebuffer
  at an offset from BAR
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

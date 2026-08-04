@@ -1,7 +1,7 @@
 From 9a78e423c22f600ee8642518a7268b277297dd5e Mon Sep 17 00:00:00 2001
 From: Matt DeVillier <matt.devillier@gmail.com>
 Date: Tue, 31 Mar 2026 09:13:17 -0500
-Subject: [PATCH 16/23] PcRtcEntry: Don't assert if RTC init fails
+Subject: [PATCH 16/24] PcRtcEntry: Don't assert if RTC init fails
 
 Failing to boot because of a dead CMOS battery is dumb.
 

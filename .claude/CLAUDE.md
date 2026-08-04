@@ -224,9 +224,56 @@ NucRedfishSyncDxe          -> the actual HTTP exchange
 Everything above `NucRedfishSyncDxe` is stock RedfishPkg. `NucRedfishSyncDxe`
 is the consumer of `EDKII_REDFISH_CONFIG_HANDLER_PROTOCOL` that the payload
 otherwise lacks. Since the move to upstream edk2 (below), edk2-redfish-client
-is compiled in alongside it and produces that protocol too — but it needs far
-more of a Redfish service than the JetKVM currently implements, so
-`NucRedfishSyncDxe` is still what actually does the work.
+is compiled in alongside it and produces that protocol too.
+
+### Getting edk2-redfish-client to actually run
+
+Four separate things had to be true, and each failed in a way that pointed
+somewhere other than the cause. In dependency order:
+
+**1. Do not clean up a service you were handed.** `NucRedfishSyncDxe` used to
+call `RedfishCleanupService()` when its exchange finished. That was harmless
+while it was the only consumer, and is not now:
+`RedfishConfigHandlerDriver` creates the service once and passes the *same*
+instance to every registered config handler, so destroying it tears down the
+REST EX child underneath everyone who has not run yet. The ten client feature
+drivers each create their own service off that interface afterwards, and every
+one of them then failed on its first send with
+
+```text
+ResetHttpTslSession: TCP connection is finished...
+HttpSendReceive: /redfish SendReceive failure: Not started
+```
+
+which surfaces as "no Redfish version" — so every URI the feature drivers build
+comes out as `v1Systems` rather than `/redfish/v1/Systems` — plus
+"CollectionHandler failure: Not started" and "Fail to dispatch Redfish tasks:
+Device Error". None of it points at a cleanup call in another driver.
+
+**2. `PcdHttpGetRetry` and friends default to 0.** RedfishHttpDxe then gives up
+on the first failure, and the first failure after an idle gap is guaranteed
+rather than exceptional — the BMC closes the TCP connection, `RedfishRestEx`
+resets the instance and returns an error, and it is the *next* attempt that
+works. Patch 0024 sets all five to 3. The log tell is `failed (1/0)`; with the
+fix it reads `retry (1/3)`.
+
+**3. The BMC has to serve the branches each feature driver walks.** They are
+separate drivers and each gives up if its link is missing:
+`TaskService`, `Registries`, and on the ComputerSystem `Bios`, `SecureBoot`,
+`Memory` and `Boot/BootOptions`. Before this the JetKVM had none of them, and
+gin fell through to the web UI's `index.html` — which is why
+`RedfishTaskServiceDxe` reported `Device Error` rather than a 404. See
+`redfish_client.go` in the kvm checkout.
+
+**4. `RedfishResourceIdentifyLibComputerSystem` cannot work on this board.** It
+matches the resource's `UUID` against SMBIOS type 1 to pick this host's system
+out of a BMC managing several. coreboot leaves that UUID unset here
+(`dmidecode -s system-uuid` says `Not Settable`), so it returns `EFI_NOT_FOUND`
+and the member is skipped with `"/redfish/v1/Systems/1" is not handled by us`.
+It is also the wrong question on a host interface: one host, one system, nothing
+to disambiguate. Patch 0100 — the only patch that applies to the
+edk2-redfish-client tree rather than edk2, hence the `patchdir` in SRC_URI —
+resolves the library to the Null instance, which accepts the resource.
 
 **Four non-obvious traps in writing such a consumer**, all hit on hardware
 2026-07-30:

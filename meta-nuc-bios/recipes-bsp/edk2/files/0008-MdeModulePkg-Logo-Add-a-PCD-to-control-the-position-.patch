@@ -1,7 +1,7 @@
 From 37c875ae8d8327b1c552eba38f023fe423ad359f Mon Sep 17 00:00:00 2001
 From: Sean Rhodes <sean@starlabs.systems>
 Date: Fri, 15 Jul 2022 16:20:43 +0100
-Subject: [PATCH 08/23] MdeModulePkg/Logo: Add a PCD to control the position of
+Subject: [PATCH 08/24] MdeModulePkg/Logo: Add a PCD to control the position of
  the Logo
 
 When set to true, the Logo is positioned according to the BGRT

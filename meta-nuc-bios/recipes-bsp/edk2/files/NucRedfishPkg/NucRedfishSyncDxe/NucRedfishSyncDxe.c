@@ -633,9 +633,9 @@ NucRedfishSync (
 
   if (EFI_ERROR (Status)) {
     //
-    // No point attempting the rest: the service is not answering.
+    // No point attempting the rest: the service is not answering. Leave the
+    // service alone regardless -- see the note at the end of this function.
     //
-    RedfishCleanupService (Service);
     return;
   }
 
@@ -668,8 +668,29 @@ NucRedfishSync (
 
   RedfishHttpFreeResponse (&Response);
 
-  RedfishCleanupService (Service);
-
+  //
+  // Deliberately no RedfishCleanupService (Service) here.
+  //
+  // This driver does not own the service. RedfishConfigHandlerDriver creates it
+  // once from what RedfishDiscoverDxe found and hands the same instance to every
+  // registered config handler in turn. Destroying it when this one finishes
+  // tears down the REST EX child underneath everyone who has not run yet.
+  //
+  // That was harmless while this was the only consumer. It is not harmless now
+  // that edk2-redfish-client is compiled in: its ten feature drivers each create
+  // their own service off the same discovered interface *after* this handler
+  // returns, and every one of them then fails on the first send --
+  //
+  //     RedfishRestExSendReceive(): Perform HTTP Request Method - 0, URL: ...
+  //     ResetHttpTslSession: TCP connection is finished...
+  //     HttpSendReceive: /redfish SendReceive failure: Not started
+  //
+  // -- which surfaces far from here, as "no Redfish version" (so every URI the
+  // feature drivers build comes out as "v1Systems" rather than
+  // "/redfish/v1/Systems"), "CollectionHandler failure: Not started", and
+  // "Fail to dispatch Redfish tasks: Device Error". None of it points back at a
+  // cleanup call in an unrelated driver.
+  //
   DEBUG ((DEBUG_ERROR, "NucRedfishSync: host interface exchange complete\n"));
 }
 

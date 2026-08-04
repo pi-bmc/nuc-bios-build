@@ -1,0 +1,66 @@
+From 4462c2051a27a44d751f8e848c5b559c5917bc23 Mon Sep 17 00:00:00 2001
+From: appkins <nbatkins@gmail.com>
+Date: Tue, 4 Aug 2026 15:10:34 -0500
+Subject: [PATCH] RedfishClientPkg: accept the single ComputerSystem on a host
+ interface
+
+RedfishResourceIdentifyLibComputerSystem exists to pick this host's own
+ComputerSystem out of a BMC that manages several, by matching the resource's
+UUID against SMBIOS type 1. On a Redfish host interface (DSP0270) that is the
+wrong question: the link is point-to-point to exactly one host and the service
+exposes exactly one ComputerSystem, so there is nothing to disambiguate.
+
+It is also unanswerable on this board. coreboot leaves the SMBIOS type 1 UUID
+unset -- dmidecode reports "Not Settable" -- so there is no GUID to compare,
+the library returns EFI_NOT_FOUND, and the collection member is skipped:
+
+    RedfishResourceIdentify: identify /redfish/v1/Systems/1 failed: Unsupported
+    HandleResource: "/redfish/v1/Systems/1" is not handled by us
+    StartUpFeatureDriver: No InformationTypeCollectionMemberConfigLanguage of Systems returned.
+
+which stops the whole ComputerSystem feature before it starts.
+
+Resolve RedfishResourceIdentifyLib to the Null instance for ComputerSystemDxe,
+which accepts the resource.
+
+Upstream-Status: Inappropriate [platform specific]
+Signed-off-by: nuc-bios-build <nbatkins@gmail.com>
+---
+ .../RedfishClientComponents.dsc.inc           | 19 ++++++++++++++++++-
+ 1 file changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/RedfishClientPkg/RedfishClientComponents.dsc.inc b/RedfishClientPkg/RedfishClientComponents.dsc.inc
+index 6cb20be7..580c388c 100644
+--- a/RedfishClientPkg/RedfishClientComponents.dsc.inc
++++ b/RedfishClientPkg/RedfishClientComponents.dsc.inc
+@@ -28,9 +28,26 @@
+   #
+   RedfishClientPkg/Features/Memory/V1_7_1/Dxe/MemoryDxe.inf
+   RedfishClientPkg/Features/MemoryCollectionDxe/MemoryCollectionDxe.inf
++  #
++  # RedfishResourceIdentifyLibComputerSystem picks this host's ComputerSystem
++  # out of a BMC that manages several, by matching the resource's UUID against
++  # SMBIOS type 1. That is the wrong question on a Redfish host interface
++  # (DSP0270): the link is point-to-point to exactly one host and the service
++  # exposes exactly one ComputerSystem, so there is nothing to disambiguate.
++  #
++  # It is also unanswerable on this board -- coreboot leaves the type 1 UUID
++  # unset ("Not Settable" in dmidecode), so there is no GUID to compare and
++  # the library returns EFI_NOT_FOUND. The member is then skipped, which stops
++  # the whole ComputerSystem feature before it starts:
++  #
++  #   RedfishResourceIdentify: identify /redfish/v1/Systems/1 failed: Unsupported
++  #   HandleResource: "/redfish/v1/Systems/1" is not handled by us
++  #
++  # Fall back to the Null instance, which accepts the resource.
++  #
+   RedfishClientPkg/Features/ComputerSystem/v1_5_0/Dxe/ComputerSystemDxe.inf {
+     <LibraryClasses>
+-      RedfishResourceIdentifyLib|RedfishClientPkg/Library/RedfishResourceIdentifyLibComputerSystem/v1_5_0/RedfishResourceIdentifyLibComputerSystem.inf
++      RedfishResourceIdentifyLib|RedfishClientPkg/Library/RedfishResourceIdentifyLibNull/RedfishResourceIdentifyLibNull.inf
+   }
+   RedfishClientPkg/Features/ComputerSystemCollectionDxe/ComputerSystemCollectionDxe.inf
+   RedfishClientPkg/Features/Bios/v1_0_9/Dxe/BiosDxe.inf
+-- 
+2.55.0
+

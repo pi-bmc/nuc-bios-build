@@ -1,7 +1,7 @@
 From 52adbbe3d6c7cd17ca14bdf5b1337348bb5c03e9 Mon Sep 17 00:00:00 2001
 From: Matt DeVillier <matt.devillier@gmail.com>
 Date: Fri, 25 Apr 2025 13:15:47 -0500
-Subject: [PATCH 02/23] MdeModulePkg: Don't remove rejected PCI devices
+Subject: [PATCH 02/24] MdeModulePkg: Don't remove rejected PCI devices
 
 This is needed to fix framebuffer display when using
 `CONFIG_RESOURCE_ALLOCATION_TOP_DOWN=y` in coreboot. Without this

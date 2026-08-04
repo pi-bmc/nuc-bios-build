@@ -1,0 +1,70 @@
+From 0289e3b5d8771c51fad05a376f356b75f01304c5 Mon Sep 17 00:00:00 2001
+From: appkins <nbatkins@gmail.com>
+Date: Tue, 4 Aug 2026 14:28:40 -0500
+Subject: [PATCH 24/24] UefiPayloadPkg: retry Redfish HTTP requests at least
+ once
+
+RedfishPkg's per-method retry PCDs all default to 0, which makes RedfishHttpDxe
+give up on the first failure. On this platform the first failure after an idle
+gap is not exceptional, it is guaranteed: the BMC's HTTP server closes the TCP
+connection between the firmware's early exchange and the Redfish client layer
+running at the end of BDS, RedfishRestExSendReceive finds the connection gone,
+calls ResetHttpTslSession() and returns an error, and it is the *next* attempt
+on the freshly reset instance that succeeds.
+
+With no retry the whole client layer dies on its very first request:
+
+    HttpSendReceive: /redfish SendReceive failure: Not started
+    RedfishGetResource: get /redfish failed (1/0): Not started
+    RedfishGetVersion, RedfishGetByService to /redfish failed: Not started
+
+after which RedfishGetVersion falls back to PcdDefaultRedfishVersion, every URI
+the feature drivers build is wrong ("v1Systems" rather than
+"/redfish/v1/Systems"), and the whole stack reports things like "no Redfish
+service configured" and "CollectionHandler failure: Not started" -- none of
+which points at the transport.
+
+Three retries with a one second wait, which is the shape the PCDs exist for.
+
+Upstream-Status: Inappropriate [platform specific]
+Signed-off-by: nuc-bios-build <nbatkins@gmail.com>
+---
+ UefiPayloadPkg/UefiPayloadPkg.dsc | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/UefiPayloadPkg/UefiPayloadPkg.dsc b/UefiPayloadPkg/UefiPayloadPkg.dsc
+index 714cdbb033..9ac354c092 100644
+--- a/UefiPayloadPkg/UefiPayloadPkg.dsc
++++ b/UefiPayloadPkg/UefiPayloadPkg.dsc
+@@ -1062,6 +1062,28 @@
+   gEfiRedfishPkgTokenSpaceGuid.PcdRedfishRestExServiceDevicePath.DevicePathNum|1
+   gEfiRedfishPkgTokenSpaceGuid.PcdRedfishRestExServiceDevicePath.DevicePath|{DEVICE_PATH("MAC(DAA762233EF5,0x1)")}
+ 
++  #
++  # Retry every HTTP method at least once. These default to 0, which makes
++  # RedfishHttpDxe give up on the first failure -- and the first failure after
++  # an idle gap is guaranteed, not exceptional: the BMC's HTTP server closes
++  # the TCP connection, RedfishRestExSendReceive finds it gone, calls
++  # ResetHttpTslSession() and returns an error, and the *next* attempt on the
++  # freshly reset instance is the one that succeeds. Without a retry the whole
++  # Redfish client layer dies on its first request after BDS:
++  #
++  #   HttpSendReceive: /redfish SendReceive failure: Not started
++  #   RedfishGetResource: get /redfish failed (1/0): Not started
++  #
++  # which then reads as "no Redfish version", "no service configured", and a
++  # feature stack that silently does nothing.
++  #
++  gEfiRedfishPkgTokenSpaceGuid.PcdHttpGetRetry|3
++  gEfiRedfishPkgTokenSpaceGuid.PcdHttpPutRetry|3
++  gEfiRedfishPkgTokenSpaceGuid.PcdHttpPatchRetry|3
++  gEfiRedfishPkgTokenSpaceGuid.PcdHttpPostRetry|3
++  gEfiRedfishPkgTokenSpaceGuid.PcdHttpDeleteRetry|3
++  gEfiRedfishPkgTokenSpaceGuid.PcdHttpRetryWaitInSecond|1
++
+ [PcdsDynamicExDefault]
+   gEfiNetworkPkgTokenSpaceGuid.PcdIPv6HttpSupport|FALSE
+ 
+-- 
+2.55.0
+

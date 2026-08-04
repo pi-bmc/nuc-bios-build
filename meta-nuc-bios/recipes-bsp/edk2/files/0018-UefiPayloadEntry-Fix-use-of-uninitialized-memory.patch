@@ -1,7 +1,7 @@
 From 2a0b407d91c2695ce179ec96604697e2c216321f Mon Sep 17 00:00:00 2001
 From: Patrick Rudolph <patrick.rudolph@9elements.com>
 Date: Wed, 6 May 2026 08:08:01 +0200
-Subject: [PATCH 18/23] UefiPayloadEntry: Fix use of uninitialized memory
+Subject: [PATCH 18/24] UefiPayloadEntry: Fix use of uninitialized memory
 
 In coreboot the SMBIOS table generation is optional. When no
 SMBIOS tables where found UefiPayloadEntry creates the

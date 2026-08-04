@@ -1,7 +1,7 @@
 From 814d2fc0705a2fc1b4c43182686c5646869f13f8 Mon Sep 17 00:00:00 2001
 From: appkins <nbatkins@gmail.com>
 Date: Tue, 4 Aug 2026 13:06:46 -0500
-Subject: [PATCH 23/23] UefiPayloadPkg: give NetworkPkg the protocol producers
+Subject: [PATCH 23/24] UefiPayloadPkg: give NetworkPkg the protocol producers
  its depex requires
 
 With NETWORK_DRIVER_ENABLE=TRUE the network stack builds, lands in the DXE FV,

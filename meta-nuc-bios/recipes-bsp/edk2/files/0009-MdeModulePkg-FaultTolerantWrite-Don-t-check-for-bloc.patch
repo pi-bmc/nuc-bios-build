@@ -1,7 +1,7 @@
 From 5c5e21776bd76dc20c18d2ba937d41b5892bc2b2 Mon Sep 17 00:00:00 2001
 From: Sean Rhodes <sean@starlabs.systems>
 Date: Fri, 11 Feb 2022 17:51:38 +0000
-Subject: [PATCH 09/23] MdeModulePkg/FaultTolerantWrite: Don't check for block
+Subject: [PATCH 09/24] MdeModulePkg/FaultTolerantWrite: Don't check for block
  alignment
 
 Don't check for block alignment as it will fail for devices that are memory mapped.

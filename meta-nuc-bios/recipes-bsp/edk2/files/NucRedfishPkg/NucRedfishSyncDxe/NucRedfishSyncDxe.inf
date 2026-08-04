@@ -49,9 +49,16 @@
 [Protocols]
   gEdkIIRedfishConfigHandlerProtocolGuid    ## PRODUCES
   gEfiSmbiosProtocolGuid                    ## CONSUMES
+  gEfiDiskInfoProtocolGuid                  ## CONSUMES
+  gEfiBlockIoProtocolGuid                   ## CONSUMES
+  gEfiDevicePathProtocolGuid                ## CONSUMES
+  gEfiNvmExpressPassThruProtocolGuid        ## CONSUMES
 
 [Guids]
   gEfiGlobalVariableGuid                    ## CONSUMES
+  gEfiDiskInfoNvmeInterfaceGuid             ## CONSUMES
+  gEfiDiskInfoAhciInterfaceGuid             ## CONSUMES
+  gEfiDiskInfoIdeInterfaceGuid              ## CONSUMES
 
 [Depex]
   gEfiSmbiosProtocolGuid

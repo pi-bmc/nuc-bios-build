@@ -3,8 +3,39 @@
 #include <acpi/acpi.h>
 #include <cf9_reset.h>
 #include <device/device.h>
+#include <smbios.h>
+#include <uuid.h>
 
 #include "nuc5i5ryb.h"
+
+/*
+ * SMBIOS type 1 system UUID. The weak default leaves the field zeroed, which
+ * dmidecode reports as "Not Settable": the stock BIOS kept its UUID in its own
+ * NVRAM, and flashing coreboot erased it. A missing UUID is not cosmetic here
+ * -- it is why RedfishResourceIdentifyLibComputerSystem could not match this
+ * host's ComputerSystem and had to be resolved to the Null instance, and it
+ * leaves the Redfish host interface with no UUID to report to the BMC.
+ *
+ * The value is version-5 (name-based), derived from this board's one burned-in
+ * unique identifier, the onboard I218-V's MAC address:
+ *
+ *   uuidgen --sha1 --namespace @dns --name "b8:ae:ed:7e:3f:6e"
+ *
+ * A constant rather than a runtime derivation on purpose: at SMBIOS-write time
+ * the MAC lives in the GbE flash region, and parsing that from ramstage buys
+ * nothing over deriving it once here. Regenerate if this port ever drives a
+ * different physical board.
+ *
+ * parse_uuid() emits the SMBIOS 2.6+ byte order (first three fields
+ * little-endian) and leaves the field zeroed -- "not settable", never garbage
+ * -- if the string is malformed.
+ */
+#define SYSTEM_UUID "d97878df-9997-5a65-9e67-8f035e3fd79d"
+
+void smbios_system_set_uuid(u8 *uuid)
+{
+	parse_uuid(uuid, SYSTEM_UUID);
+}
 
 /*
  * Advertise a *full* CF9 reset in the FADT, not the soft one.

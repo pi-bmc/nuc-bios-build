@@ -10,6 +10,8 @@
 
 #include <Uefi.h>
 
+#include <IndustryStandard/Atapi.h>
+#include <IndustryStandard/Nvme.h>
 #include <IndustryStandard/SmBios.h>
 
 #include <Library/BaseLib.h>
@@ -22,7 +24,11 @@
 #include <Library/UefiLib.h>
 #include <Library/UefiRuntimeServicesTableLib.h>
 
+#include <Protocol/BlockIo.h>
+#include <Protocol/DevicePath.h>
+#include <Protocol/DiskInfo.h>
 #include <Protocol/EdkIIRedfishConfigHandler.h>
+#include <Protocol/NvmExpressPassthru.h>
 #include <Protocol/Smbios.h>
 
 #include <RedfishServiceData.h>
@@ -36,6 +42,7 @@
 #define NUC_REDFISH_SERVICE_ROOT_URI  L"/redfish/v1/"
 #define NUC_REDFISH_SYSTEM_URI        L"/redfish/v1/Systems/1"
 #define NUC_REDFISH_MEMORY_URI        L"/redfish/v1/Systems/1/Memory"
+#define NUC_REDFISH_DRIVES_URI        L"/redfish/v1/Systems/1/Storage/1/Drives"
 
 //
 // Boot progress state reported at the point the config handler runs: DXE is
@@ -187,6 +194,68 @@ EFI_STATUS
 NucRedfishBuildMemoryPost (
   IN  NUC_REDFISH_MEMORY_MODULE  *Module,
   OUT CHAR8                      **Json
+  );
+
+//
+// Physical drives reported. One NVMe SSD is the expected population; the bound
+// covers a SATA disk in the 2.5" bay as well, with headroom.
+//
+#define NUC_REDFISH_DRIVE_MAX  8
+
+//
+// One physical drive, reduced to the Redfish Drive properties the BMC stores.
+//
+// Unlike memory, this cannot come from SMBIOS at all: DSP0134 defines no
+// structure type for a disk (its whole storage story is type 9 slots and type
+// 41 onboard devices), so the boot-services protocol stack is the only
+// firmware-native source. It also cannot come from edk2-redfish-client, whose
+// Features/ directory has no Storage driver -- and whose only data source
+// (HII questions) could never carry drive inventory anyway.
+//
+typedef struct {
+  CHAR8          Model[NUC_REDFISH_STR_MAX];
+  CHAR8          SerialNumber[NUC_REDFISH_STR_MAX];
+  CHAR8          Revision[NUC_REDFISH_STR_MAX];    // firmware revision
+  CONST CHAR8    *Protocol;                        // "NVMe" or "SATA"
+  CONST CHAR8    *MediaType;                       // "SSD", "HDD", or NULL when unknown
+  UINT64         CapacityBytes;                    // 0 = unknown
+} NUC_REDFISH_DRIVE;
+
+/**
+  Collect the local drives BDS has connected, via EFI_DISK_INFO_PROTOCOL.
+
+  Only reports what is already connected: this runs at TPL_CALLBACK, where
+  ConnectController is not permitted, so a drive BDS has not brought up is
+  invisible here. On this board the exchange runs during BdsWait, after
+  ConnectAll, so that is every drive.
+
+  @param[out] Drives  Receives the drives.
+  @param[in]  Max     Capacity of Drives.
+  @param[out] Count   Receives the number written.
+
+  @retval EFI_SUCCESS  Zero or more drives were collected.
+**/
+EFI_STATUS
+NucRedfishCollectDrives (
+  OUT NUC_REDFISH_DRIVE  *Drives,
+  IN  UINTN              Max,
+  OUT UINTN              *Count
+  );
+
+/**
+  Build the Drive POST body for one drive.
+
+  @param[in]  Drive  Drive to describe.
+  @param[out] Json   Receives an allocated ASCII JSON body. Caller frees with
+                     FreePool().
+
+  @retval EFI_SUCCESS           Body was built.
+  @retval EFI_OUT_OF_RESOURCES  Allocation failed.
+**/
+EFI_STATUS
+NucRedfishBuildDrivePost (
+  IN  NUC_REDFISH_DRIVE  *Drive,
+  OUT CHAR8              **Json
   );
 
 #endif // NUC_REDFISH_SYNC_DXE_H_

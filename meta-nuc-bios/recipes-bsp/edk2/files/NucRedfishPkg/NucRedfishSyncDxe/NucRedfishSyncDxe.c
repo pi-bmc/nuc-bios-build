@@ -626,6 +626,53 @@ ReportMemory (
 }
 
 /**
+  Report the host's local drives to the BMC's Storage subsystem.
+
+  Same shape as ReportMemory -- one POST per drive, keyed on SerialNumber so a
+  later boot updates rather than duplicates -- but sourced from the
+  boot-services stack (DiskInfo / NVMe pass-thru) instead of SMBIOS, which has
+  no structure type for a disk.
+
+  @param[in] Service  The Redfish service to report to.
+**/
+STATIC
+VOID
+ReportDrives (
+  IN REDFISH_SERVICE  Service
+  )
+{
+  NUC_REDFISH_DRIVE  Drives[NUC_REDFISH_DRIVE_MAX];
+  REDFISH_RESPONSE   Response;
+  EFI_STATUS         Status;
+  UINTN              Count;
+  UINTN              Index;
+  CHAR8              *Body;
+
+  Status = NucRedfishCollectDrives (Drives, NUC_REDFISH_DRIVE_MAX, &Count);
+  if (EFI_ERROR (Status) || (Count == 0)) {
+    DEBUG ((DEBUG_ERROR, "NucRedfishSync: no drives to report - %r\n", Status));
+    return;
+  }
+
+  for (Index = 0; Index < Count; Index++) {
+    Body   = NULL;
+    Status = NucRedfishBuildDrivePost (&Drives[Index], &Body);
+    if (EFI_ERROR (Status) || (Body == NULL)) {
+      continue;
+    }
+
+    ZeroMem (&Response, sizeof (Response));
+    Status = RedfishHttpPostResource (Service, NUC_REDFISH_DRIVES_URI, Body, &Response);
+    LogResult ("POST", NUC_REDFISH_DRIVES_URI, Status, &Response);
+    RedfishHttpFreeResponse (&Response);
+
+    FreePool (Body);
+  }
+
+  DEBUG ((DEBUG_ERROR, "NucRedfishSync: reported %d drive(s)\n", Count));
+}
+
+/**
   Perform the host-interface exchange against the discovered Redfish service.
 
   @param[in] ServiceInfo  Discovered Redfish service information.
@@ -710,6 +757,11 @@ NucRedfishSync (
   // 2b. Report the DIMMs.
   //
   ReportMemory (Service);
+
+  //
+  // 2c. Report the drives.
+  //
+  ReportDrives (Service);
 
   //
   // 3. Read back the system, including any boot override the BMC wants applied.

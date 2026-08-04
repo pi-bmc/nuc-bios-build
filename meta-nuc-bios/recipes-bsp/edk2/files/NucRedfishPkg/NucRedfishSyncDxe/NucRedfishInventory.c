@@ -605,3 +605,352 @@ NucRedfishBuildMemoryPost (
   *Json = Body;
   return EFI_SUCCESS;
 }
+
+/**
+  Copy a fixed-width identify-data string field, undoing its encoding.
+
+  ATA and NVMe identify strings are fixed-width, space-padded and not
+  NUL-terminated. ATA additionally stores them byte-swapped within each 16-bit
+  word ("oMedM l" for "Model M"), which SwapPairs undoes. The result is
+  NUL-terminated with the leading and trailing padding removed.
+
+  @param[out] Dest       Destination buffer.
+  @param[in]  DestSize   Size of Dest in bytes.
+  @param[in]  Source     Fixed-width source field.
+  @param[in]  SourceLen  Width of the source field; even when SwapPairs.
+  @param[in]  SwapPairs  Undo ATA's per-word byte swap.
+**/
+STATIC
+VOID
+CopyIdentifyString (
+  OUT CHAR8        *Dest,
+  IN  UINTN        DestSize,
+  IN  CONST UINT8  *Source,
+  IN  UINTN        SourceLen,
+  IN  BOOLEAN      SwapPairs
+  )
+{
+  UINTN  Length;
+  UINTN  Index;
+  UINTN  Start;
+
+  if (DestSize == 0) {
+    return;
+  }
+
+  Length = SourceLen;
+  if (Length >= DestSize) {
+    Length = DestSize - 1;
+  }
+
+  for (Index = 0; Index < Length; Index++) {
+    Dest[Index] = (CHAR8)Source[SwapPairs ? (Index ^ 1) : Index];
+  }
+
+  //
+  // Trim the padding: trailing first (spaces, and NULs from a device that
+  // pads with them instead), then leading.
+  //
+  while ((Length > 0) && ((UINT8)Dest[Length - 1] <= ' ')) {
+    Length--;
+  }
+
+  Dest[Length] = '\0';
+
+  Start = 0;
+  while (Dest[Start] == ' ') {
+    Start++;
+  }
+
+  if (Start > 0) {
+    CopyMem (Dest, Dest + Start, Length - Start + 1);
+  }
+}
+
+/**
+  Fill in a drive's identity from its NVMe controller.
+
+  The model, serial and firmware revision live in the *controller* identify
+  data, which EFI_DISK_INFO_PROTOCOL does not expose for NVMe -- its Identify()
+  returns the namespace data, which has neither. So reach the controller's
+  pass-thru and send ADMIN_IDENTIFY ourselves, the same way UefiBootManagerLib
+  builds its "NVMe: <model>" boot descriptions (BmGetNvmeDescription).
+
+  @param[in]  Handle  Handle carrying the NVMe-interface DiskInfo.
+  @param[out] Drive   Receives model, serial, revision, protocol, media type.
+
+  @retval EFI_SUCCESS  Drive identity was filled in.
+**/
+STATIC
+EFI_STATUS
+CollectNvmeDrive (
+  IN  EFI_HANDLE         Handle,
+  OUT NUC_REDFISH_DRIVE  *Drive
+  )
+{
+  EFI_STATUS                                Status;
+  EFI_DEVICE_PATH_PROTOCOL                  *DevicePath;
+  EFI_NVM_EXPRESS_PASS_THRU_PROTOCOL        *Passthru;
+  EFI_NVM_EXPRESS_PASS_THRU_COMMAND_PACKET  Packet;
+  EFI_NVM_EXPRESS_COMMAND                   Command;
+  EFI_NVM_EXPRESS_COMPLETION                Completion;
+  NVME_ADMIN_CONTROLLER_DATA                Data;
+
+  Status = gBS->HandleProtocol (Handle, &gEfiDevicePathProtocolGuid, (VOID **)&DevicePath);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Status = gBS->LocateDevicePath (&gEfiNvmExpressPassThruProtocolGuid, &DevicePath, &Handle);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Status = gBS->HandleProtocol (Handle, &gEfiNvmExpressPassThruProtocolGuid, (VOID **)&Passthru);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  ZeroMem (&Packet, sizeof (Packet));
+  ZeroMem (&Command, sizeof (Command));
+  ZeroMem (&Completion, sizeof (Completion));
+  ZeroMem (&Data, sizeof (Data));
+
+  Command.Cdw0.Opcode = NVME_ADMIN_IDENTIFY_CMD;
+  //
+  // CNS 1 identifies the controller; NSID is unused for that structure and
+  // stays 0.
+  //
+  Command.Cdw10 = 1;
+  Command.Flags = CDW10_VALID;
+
+  Packet.NvmeCmd        = &Command;
+  Packet.NvmeCompletion = &Completion;
+  Packet.TransferBuffer = &Data;
+  Packet.TransferLength = sizeof (Data);
+  Packet.CommandTimeout = EFI_TIMER_PERIOD_SECONDS (5);
+  Packet.QueueType      = NVME_ADMIN_QUEUE;
+
+  Status = Passthru->PassThru (Passthru, 0, &Packet, NULL);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  CopyIdentifyString (Drive->Model, sizeof (Drive->Model), Data.Mn, sizeof (Data.Mn), FALSE);
+  CopyIdentifyString (Drive->SerialNumber, sizeof (Drive->SerialNumber), Data.Sn, sizeof (Data.Sn), FALSE);
+  CopyIdentifyString (Drive->Revision, sizeof (Drive->Revision), Data.Fr, sizeof (Data.Fr), FALSE);
+
+  Drive->Protocol  = "NVMe";
+  Drive->MediaType = "SSD";
+
+  return EFI_SUCCESS;
+}
+
+/**
+  Fill in a drive's identity from its ATA IDENTIFY data.
+
+  @param[in]  DiskInfo  AHCI- or IDE-interface DiskInfo instance.
+  @param[out] Drive     Receives model, serial, revision, protocol, media type.
+
+  @retval EFI_SUCCESS  Drive identity was filled in.
+**/
+STATIC
+EFI_STATUS
+CollectAtaDrive (
+  IN  EFI_DISK_INFO_PROTOCOL  *DiskInfo,
+  OUT NUC_REDFISH_DRIVE       *Drive
+  )
+{
+  EFI_STATUS         Status;
+  ATA_IDENTIFY_DATA  Data;
+  UINT32             Size;
+
+  ZeroMem (&Data, sizeof (Data));
+  Size = sizeof (Data);
+
+  Status = DiskInfo->Identify (DiskInfo, &Data, &Size);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  CopyIdentifyString (Drive->Model, sizeof (Drive->Model), (CONST UINT8 *)Data.ModelName, sizeof (Data.ModelName), TRUE);
+  CopyIdentifyString (Drive->SerialNumber, sizeof (Drive->SerialNumber), (CONST UINT8 *)Data.SerialNo, sizeof (Data.SerialNo), TRUE);
+  CopyIdentifyString (Drive->Revision, sizeof (Drive->Revision), (CONST UINT8 *)Data.FirmwareVer, sizeof (Data.FirmwareVer), TRUE);
+
+  Drive->Protocol = "SATA";
+
+  //
+  // Word 217: 1 means non-rotating, 0x0401-0xFFFE is an RPM figure. Everything
+  // else is "not reported", left NULL rather than guessed.
+  //
+  if (Data.nominal_media_rotation_rate == 1) {
+    Drive->MediaType = "SSD";
+  } else if ((Data.nominal_media_rotation_rate >= 0x0401) && (Data.nominal_media_rotation_rate <= 0xFFFE)) {
+    Drive->MediaType = "HDD";
+  }
+
+  return EFI_SUCCESS;
+}
+
+EFI_STATUS
+NucRedfishCollectDrives (
+  OUT NUC_REDFISH_DRIVE  *Drives,
+  IN  UINTN              Max,
+  OUT UINTN              *Count
+  )
+{
+  EFI_STATUS              Status;
+  EFI_HANDLE              *Handles;
+  UINTN                   HandleCount;
+  UINTN                   Index;
+  UINTN                   Existing;
+  EFI_DISK_INFO_PROTOCOL  *DiskInfo;
+  EFI_BLOCK_IO_PROTOCOL   *BlockIo;
+  NUC_REDFISH_DRIVE       *Drive;
+
+  if ((Drives == NULL) || (Count == NULL) || (Max == 0)) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  *Count = 0;
+  ZeroMem (Drives, Max * sizeof (*Drives));
+
+  Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiDiskInfoProtocolGuid, NULL, &HandleCount, &Handles);
+  if (EFI_ERROR (Status)) {
+    //
+    // A diskless boot (netboot with no local media connected) is a normal
+    // outcome, not a failure.
+    //
+    return EFI_SUCCESS;
+  }
+
+  for (Index = 0; Index < HandleCount; Index++) {
+    if (*Count >= Max) {
+      DEBUG ((DEBUG_ERROR, "NucRedfishSync: more than %d drives, truncating\n", Max));
+      break;
+    }
+
+    Status = gBS->HandleProtocol (Handles[Index], &gEfiDiskInfoProtocolGuid, (VOID **)&DiskInfo);
+    if (EFI_ERROR (Status)) {
+      continue;
+    }
+
+    Drive = &Drives[*Count];
+
+    if (CompareGuid (&DiskInfo->Interface, &gEfiDiskInfoNvmeInterfaceGuid)) {
+      Status = CollectNvmeDrive (Handles[Index], Drive);
+    } else if (CompareGuid (&DiskInfo->Interface, &gEfiDiskInfoAhciInterfaceGuid) ||
+               CompareGuid (&DiskInfo->Interface, &gEfiDiskInfoIdeInterfaceGuid))
+    {
+      Status = CollectAtaDrive (DiskInfo, Drive);
+    } else {
+      //
+      // Everything else is skipped deliberately. The only USB mass storage
+      // this board ever sees is the JetKVM's own virtual-media gadget --
+      // reporting that would hand the BMC's mounted ISO back to it as host
+      // hardware.
+      //
+      continue;
+    }
+
+    if (EFI_ERROR (Status) || ((Drive->Model[0] == '\0') && (Drive->SerialNumber[0] == '\0'))) {
+      ZeroMem (Drive, sizeof (*Drive));
+      continue;
+    }
+
+    //
+    // An NVMe controller with several namespaces yields one DiskInfo handle
+    // per namespace, each answering with the controller's identity. Report
+    // the device once.
+    //
+    for (Existing = 0; Existing < *Count; Existing++) {
+      if ((AsciiStrCmp (Drives[Existing].SerialNumber, Drive->SerialNumber) == 0) &&
+          (AsciiStrCmp (Drives[Existing].Model, Drive->Model) == 0))
+      {
+        break;
+      }
+    }
+
+    if (Existing < *Count) {
+      ZeroMem (Drive, sizeof (*Drive));
+      continue;
+    }
+
+    Status = gBS->HandleProtocol (Handles[Index], &gEfiBlockIoProtocolGuid, (VOID **)&BlockIo);
+    if (!EFI_ERROR (Status) && (BlockIo->Media != NULL) && BlockIo->Media->MediaPresent) {
+      Drive->CapacityBytes = MultU64x32 (BlockIo->Media->LastBlock + 1, BlockIo->Media->BlockSize);
+    }
+
+    DEBUG ((
+      DEBUG_ERROR,
+      "NucRedfishSync: drive[%d] %a '%a' sn='%a' fw='%a' %ld bytes\n",
+      *Count,
+      Drive->Protocol,
+      Drive->Model,
+      Drive->SerialNumber,
+      Drive->Revision,
+      Drive->CapacityBytes
+      ));
+
+    (*Count)++;
+  }
+
+  FreePool (Handles);
+  return EFI_SUCCESS;
+}
+
+EFI_STATUS
+NucRedfishBuildDrivePost (
+  IN  NUC_REDFISH_DRIVE  *Drive,
+  OUT CHAR8              **Json
+  )
+{
+  CHAR8  *Body;
+
+  if ((Drive == NULL) || (Json == NULL)) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  Body = AllocateZeroPool (NUC_REDFISH_JSON_MAX);
+  if (Body == NULL) {
+    return EFI_OUT_OF_RESOURCES;
+  }
+
+  //
+  // SerialNumber doubles as the member's identity: the BMC uses it as the
+  // resource Id, so re-reporting the same drive on a later boot updates that
+  // member rather than creating a second one.
+  //
+  AsciiSPrint (
+    Body,
+    NUC_REDFISH_JSON_MAX,
+    "{\"@odata.type\":\"#Drive.v1_4_0.Drive\""
+    ",\"Status\":{\"State\":\"Enabled\",\"Health\":\"OK\"}"
+    );
+
+  AppendJsonString (Body, NUC_REDFISH_JSON_MAX, "Name", Drive->Model);
+  AppendJsonString (Body, NUC_REDFISH_JSON_MAX, "Model", Drive->Model);
+  AppendJsonString (Body, NUC_REDFISH_JSON_MAX, "SerialNumber", Drive->SerialNumber);
+  AppendJsonString (Body, NUC_REDFISH_JSON_MAX, "Revision", Drive->Revision);
+  AppendJsonString (Body, NUC_REDFISH_JSON_MAX, "Protocol", Drive->Protocol);
+
+  if (Drive->MediaType != NULL) {
+    AppendJsonString (Body, NUC_REDFISH_JSON_MAX, "MediaType", Drive->MediaType);
+  }
+
+  //
+  // Not AppendJsonNumber: its UINT32 tops out two orders of magnitude below a
+  // routine disk size.
+  //
+  if (Drive->CapacityBytes != 0) {
+    CHAR8  Capacity[48];
+
+    AsciiSPrint (Capacity, sizeof (Capacity), ",\"CapacityBytes\":%ld", Drive->CapacityBytes);
+    AsciiStrCatS (Body, NUC_REDFISH_JSON_MAX, Capacity);
+  }
+
+  AsciiStrCatS (Body, NUC_REDFISH_JSON_MAX, "}");
+
+  *Json = Body;
+  return EFI_SUCCESS;
+}

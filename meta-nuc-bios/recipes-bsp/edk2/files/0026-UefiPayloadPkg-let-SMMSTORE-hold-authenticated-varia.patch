@@ -1,0 +1,142 @@
+From c7d1a4e05b3f2a86d19e4c07b52f8a3d6e0b1c94 Mon Sep 17 00:00:00 2001
+From: appkins <nbatkins@gmail.com>
+Date: Tue, 4 Aug 2026 18:05:12 -0500
+Subject: [PATCH 26/26] UefiPayloadPkg: let SMMSTORE hold authenticated
+ variables
+
+SECURE_BOOT_ENABLE=TRUE builds the whole Secure Boot stack -- the real
+AuthVariableLib instead of the Null one, DxeImageVerificationLib, RuntimeCryptLib,
+SecureBootConfigDxe -- and on a SMMSTORE-backed platform none of it does
+anything. The board comes up with no PK, no KEK, no db, and no SetupMode or
+SecureBoot variable at all, so an OS sees a firmware with no Secure Boot support
+and Redfish has no SecureBoot state to report.
+
+Nothing reports an error. The one clue is a single line from the variable
+driver:
+
+  Variable driver will work without auth variable support!
+
+The chain behind it: VariableRuntimeDxe calls AuthVariableLibInitialize only
+when VariableGlobal.AuthFormat is set, and AuthFormat is nothing more than
+"does the variable store's signature GUID equal gEfiAuthenticatedVariableGuid".
+SmmStoreFvbRuntimeDxe formats new stores with gEfiVariableGuid unconditionally,
+so AuthFormat is always FALSE and the initialiser is never reached. Every
+authenticated variable is created by that initialiser, which is why none of them
+exist.
+
+Make the format a PCD, defaulted to today's behaviour and turned on by
+SECURE_BOOT_ENABLE.
+
+The existing comment already knew:
+
+  // Should be gEfiVariableGuid as SMM doesn't authenticate, but userspace does
+  // Caveat: SecureBoot requires gEfiAuthenticatedVariableGuid type of storage
+
+That caveat is the reason this is opt-in rather than simply corrected.
+coreboot's SMMSTORE SMI handler writes what it is handed without inspecting it,
+so the signature checks live in the DXE variable driver rather than behind the
+SMM boundary. Enabling this yields a Secure Boot implementation that is
+functional and standards-shaped but whose root of trust stops at DXE: it will
+verify what it is asked to verify, and it does not defend the variable store
+against an attacker who already controls ring 0. That is the right trade for a
+platform using Redfish to report and manage Secure Boot state, and the wrong
+one for a platform claiming SMM-anchored key protection, so the default stays
+as it was.
+
+Note the store format is chosen once, when a blank store is initialised, and
+the validity check accepts either GUID -- so an existing plain store keeps
+working and keeps AuthFormat FALSE. Turning this on takes effect on a store
+that is new or has been erased.
+
+Upstream-Status: Pending
+Signed-off-by: nuc-bios-build <nbatkins@gmail.com>
+---
+ UefiPayloadPkg/UefiPayloadPkg.dec                    |  8 ++++++++
+ UefiPayloadPkg/UefiPayloadPkg.dsc                    |  5 +++++
+ UefiPayloadPkg/SmmStoreFvb/SmmStoreFvbRuntimeDxe.c   | 25 ++++++++++++++++++++++---
+ UefiPayloadPkg/SmmStoreFvb/SmmStoreFvbRuntimeDxe.inf |  1 +
+ 4 files changed, 36 insertions(+), 3 deletions(-)
+
+diff --git a/UefiPayloadPkg/UefiPayloadPkg.dec b/UefiPayloadPkg/UefiPayloadPkg.dec
+--- a/UefiPayloadPkg/UefiPayloadPkg.dec
++++ b/UefiPayloadPkg/UefiPayloadPkg.dec
+@@ -91,6 +91,14 @@
+ # Size of the region used by UEFI in permanent memory
+ gUefiPayloadPkgTokenSpaceGuid.PcdSystemMemoryUefiRegionSize|0x04000000|UINT32|0x00000017
+ 
++## Format the SMMSTORE variable store so it can hold authenticated variables.
++#  The variable driver decides whether a store is authenticated purely by
++#  comparing its signature GUID against gEfiAuthenticatedVariableGuid, and that
++#  is the only gate on AuthVariableLib being initialised at all. Leave this
++#  FALSE and SECURE_BOOT_ENABLE has no effect whatsoever at runtime.
++#  @Prompt Store authenticated variables in SMMSTORE.
++gUefiPayloadPkgTokenSpaceGuid.PcdSmmStoreAuthenticatedVariables|FALSE|BOOLEAN|0x0000002F
++
+ gUefiPayloadPkgTokenSpaceGuid.PcdPcdDriverFile|{ 0x57, 0x72, 0xcf, 0x80, 0xab, 0x87, 0xf9, 0x47, 0xa3, 0xfe, 0xD5, 0x0B, 0x76, 0xd8, 0x95, 0x41 }|VOID*|0x00000018
+ 
+ # Boot Manager Key
+diff --git a/UefiPayloadPkg/UefiPayloadPkg.dsc b/UefiPayloadPkg/UefiPayloadPkg.dsc
+--- a/UefiPayloadPkg/UefiPayloadPkg.dsc
++++ b/UefiPayloadPkg/UefiPayloadPkg.dsc
+@@ -698,6 +698,11 @@
+ 
+ 
+ !if $(SECURE_BOOT_ENABLE) == TRUE
++  # The variable store has to be in the authenticated format or none of the rest
++  # of Secure Boot can come up: PK/KEK/db and the SetupMode and SecureBoot
++  # variables are all created by AuthVariableLib, which the variable driver only
++  # initialises when the store signature says the store can hold them.
++  gUefiPayloadPkgTokenSpaceGuid.PcdSmmStoreAuthenticatedVariables|TRUE
+   # Override the default values from SecurityPkg to ensure images from all sources are verified in secure boot
+   gEfiSecurityPkgTokenSpaceGuid.PcdOptionRomImageVerificationPolicy|0x04
+   gEfiSecurityPkgTokenSpaceGuid.PcdFixedMediaImageVerificationPolicy|0x04
+diff --git a/UefiPayloadPkg/SmmStoreFvb/SmmStoreFvbRuntimeDxe.c b/UefiPayloadPkg/SmmStoreFvb/SmmStoreFvbRuntimeDxe.c
+--- a/UefiPayloadPkg/SmmStoreFvb/SmmStoreFvbRuntimeDxe.c
++++ b/UefiPayloadPkg/SmmStoreFvb/SmmStoreFvbRuntimeDxe.c
+@@ -154,10 +154,29 @@
+   //
+   VariableStoreHeader = (VARIABLE_STORE_HEADER *)((UINTN)Headers + FirmwareVolumeHeader->HeaderLength);
+   //
+-  // Should be gEfiVariableGuid as SMM doesn't authenticate, but userspace does
+-  // Caveat: SecureBoot requires gEfiAuthenticatedVariableGuid type of storage
++  // This signature is what the variable driver reads back to set
++  // VariableGlobal.AuthFormat, which is a plain comparison against
++  // gEfiAuthenticatedVariableGuid and the sole gate on
++  // AuthVariableLibInitialize() ever being called. Format the store plain and
++  // Secure Boot cannot work whatever SECURE_BOOT_ENABLE was set to: the driver
++  // reports
+   //
+-  CopyGuid (&VariableStoreHeader->Signature, &gEfiVariableGuid);
++  //   Variable driver will work without auth variable support!
++  //
++  // and no PK, KEK, db, SetupMode or SecureBoot variable is ever created --
++  // silently, because that path is not an error.
++  //
++  // Plain remains the default. Authentication would be enforced by the DXE
++  // variable driver and not by coreboot's SMI handler, which writes what it is
++  // handed without inspecting it, so the opt-in buys a Secure Boot whose root
++  // of trust stops at DXE rather than one anchored in SMM.
++  //
++  CopyGuid (
++    &VariableStoreHeader->Signature,
++    PcdGetBool (PcdSmmStoreAuthenticatedVariables)
++      ? &gEfiAuthenticatedVariableGuid
++      : &gEfiVariableGuid
++    );
+   VariableStoreHeader->Size   = PcdGet32 (PcdFlashNvStorageVariableSize) - FirmwareVolumeHeader->HeaderLength;
+   VariableStoreHeader->Format = VARIABLE_STORE_FORMATTED;
+   VariableStoreHeader->State  = VARIABLE_STORE_HEALTHY;
+diff --git a/UefiPayloadPkg/SmmStoreFvb/SmmStoreFvbRuntimeDxe.inf b/UefiPayloadPkg/SmmStoreFvb/SmmStoreFvbRuntimeDxe.inf
+--- a/UefiPayloadPkg/SmmStoreFvb/SmmStoreFvbRuntimeDxe.inf
++++ b/UefiPayloadPkg/SmmStoreFvb/SmmStoreFvbRuntimeDxe.inf
+@@ -49,6 +49,7 @@
+   gEfiFirmwareVolumeBlockProtocolGuid ## BY_START
+ 
+ [Pcd]
++  gUefiPayloadPkgTokenSpaceGuid.PcdSmmStoreAuthenticatedVariables
+   gEfiMdeModulePkgTokenSpaceGuid.PcdFlashNvStorageVariableBase
+   gEfiMdeModulePkgTokenSpaceGuid.PcdFlashNvStorageVariableSize
+   gEfiMdeModulePkgTokenSpaceGuid.PcdFlashNvStorageFtwWorkingBase
+-- 
+2.51.0
+

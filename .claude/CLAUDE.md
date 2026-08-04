@@ -47,7 +47,27 @@ original authorship plus a `(cherry picked from commit ...)` trailer. They split
 into coreboot/payload correctness (MTRR programming, root bridges from HOB, the
 framebuffer BAR offset, SMMSTORE block alignment, uninitialised memory in the
 entry point) and features this board is configured to use (CFR SetupMenu,
-`PRIORITIZE_INTERNAL`, the BGRT logo position). `files/0019-0023` are local.
+`PRIORITIZE_INTERNAL`, the BGRT logo position). `files/0019-0026` are local.
+
+### Editing these patches by hand
+
+Two hazards, both of which fail far from the mistake:
+
+- **edk2 sources are all-CRLF.** Any Python that inserts with `\n`, and any
+  `subprocess.run(..., text=True)` capturing `diff` output, silently strips or
+  mixes line endings; `patch` then says `different line endings` and rejects
+  every hunk. Capture as **bytes**, and assert `LF count == CR count` on the
+  result before writing.
+- **Hunk headers are not recomputed for you.** Add or drop a `+` line without
+  fixing `@@ -a,b +c,d @@` and `patch` reports `malformed patch at line N`
+  pointing at the *next* hunk. `patchutils` (`recountdiff`) is not installed
+  here; the cheap check is to count the ` `/`-`/`+` lines in each hunk and
+  compare against its header before building.
+
+The reliable way to regenerate one patch: bitbake applies the series with
+**quilt**, so `build/.../git/.pc/<patch-name>/` holds the pristine copy of every
+file that patch touches. Edit the file in the work tree, then
+`diff -u .pc/<patch>/<file> <file>` — no arithmetic involved.
 
 The reason to move was edk2-redfish-client: the GUIDs it needs
 (`gEdkIIRedfisEventRedfishInterfaceDisconnectionGuid` and friends) are declared
@@ -120,9 +140,54 @@ and the first boot afterwards lands on whatever BDS auto-creates first, which is
 the PXE entry. This is expected, not a regression. Steer it back with
 `efibootmgr -n 0001 && reboot` from whatever booted.
 
+If PXE has nothing to boot, BDS parks at `Booting from 'PXEv4 (MAC:...)' failed
+… Press any key to continue` — send any keypress over the JetKVM and it falls
+through to the NVMe. A stall at the splash right after a flash is this, not a
+regression.
+
 There is no flasher live ISO. It was removed from the tree deliberately — do not
 resurrect `kas-flasher.yml` or a `flasher` multiconfig. Flash either in-band (below)
 or with a SOIC-8 clip via `scripts/nuc-spi.sh`.
+
+### Secure Boot needs the variable store to say it can hold auth variables
+
+`SECURE_BOOT_ENABLE=TRUE` has been in the recipe all along and builds the whole
+stack — the real `AuthVariableLib` rather than the Null one,
+`DxeImageVerificationLib`, `RuntimeCryptLib`, `SecureBootConfigDxe` — and until
+patch 0026 none of it did anything. No `PK`, no `KEK`, no `db`, and no
+`SetupMode` or `SecureBoot` variable existed at all (`ls
+/sys/firmware/efi/efivars/` showed 32 variables, none of them those), so the OS
+saw a firmware with no Secure Boot support and Redfish had no state to report.
+
+Nothing errors. The single tell is one line in `cbmem -c`:
+
+```text
+Variable driver will work without auth variable support!
+```
+
+The chain: `VariableRuntimeDxe` calls `AuthVariableLibInitialize` **only** when
+`VariableGlobal.AuthFormat` is set, and `AuthFormat` is nothing more than "does
+the variable store's signature GUID equal `gEfiAuthenticatedVariableGuid`"
+(`VariableNonVolatile.c:323`). `SmmStoreFvbRuntimeDxe` formatted new stores
+with `gEfiVariableGuid` unconditionally, so the initialiser was never reached —
+and every authenticated variable is created *by* that initialiser. Its own
+comment already knew: *"Caveat: SecureBoot requires
+gEfiAuthenticatedVariableGuid type of storage"*.
+
+Patch 0026 makes it a PCD (`PcdSmmStoreAuthenticatedVariables`), defaulted to
+the old behaviour and switched on by `SECURE_BOOT_ENABLE`. **It is opt-in for a
+real reason**: coreboot's SMMSTORE SMI handler writes what it is handed without
+inspecting it, so the signature checks live in the DXE variable driver rather
+than behind the SMM boundary. What this buys is a Secure Boot that is functional
+and standards-shaped but whose root of trust stops at DXE — it verifies what it
+is asked to verify, and does not defend the variable store against an attacker
+who already has ring 0. Right for reporting and managing Secure Boot over
+Redfish; wrong for a platform claiming SMM-anchored key protection.
+
+The format is chosen once, when a *blank* store is initialised, and the validity
+check accepts either GUID — so an existing plain store keeps working and keeps
+`AuthFormat` FALSE. Turning it on takes effect on a store that is new or erased,
+which every flash produces anyway.
 
 ## Flash in-band
 
@@ -291,12 +356,34 @@ the `x-UEFI-redfish-<schema>.<version>` language. `MemoryDxe`'s INF lists no
   lookup `RedfishPlatformConfigDxe` performs to decide whether a question is
   visible to Redfish.
 
-`NucRedfishPkg/RedfishConfigDriver` is a leftover from before this: its
-`mAmiSetupMap[]` describes the AMI Aptio `L"Setup"` variable of the *stock
+  **The string package for that language has to be created first**, and this is
+  the part that is easy to get wrong. `EFI_HII_STRING_PROTOCOL.SetString` walks
+  only the string packages a package list already has and returns
+  `EFI_NOT_FOUND` for a language it has never carried — it does **not** create
+  one. So registering into a fresh language fails outright, and `HiiSetString`
+  reports it only by returning string ID 0:
+
+  ```text
+  CFR: failed to publish "power_on_after_fail" as a Redfish attribute
+  ```
+
+  `NewString` is the call that creates it, and it back-fills a blank block for
+  every string ID already in use so the new package's token space stays aligned
+  with `en-US` — which is what makes it possible to then `SetString` a prompt
+  token minted before the package existed. A driver whose strings come from a
+  `.uni` never meets this: the compiler emits one package per language in the
+  source. The CFR menu is built at runtime from coreboot's blob and starts with
+  `en-US` alone.
+
+`NucRedfishPkg/RedfishConfigDriver` **was removed** (2026-08-04). Its
+`mAmiSetupMap[]` described the AMI Aptio `L"Setup"` variable of the *stock
 Intel BIOS* (GUID `EC87D643-…`, 566-byte varstore, `FastBoot` at
-`VarOffset=0x0014`). This machine has not run that firmware since coreboot was
-flashed, so all 15 rows describe a BIOS that is not there. Stock
-`RedfishPlatformConfigDxe` is what actually answers.
+`VarOffset=0x0014`), and this machine has not run that firmware since coreboot
+was flashed, so all 15 rows described a BIOS that is not there. It also produced
+`gEdkIIRedfishPlatformConfigProtocolGuid`, the same protocol as stock
+`RedfishPlatformConfigDxe` — two producers, and which one a consumer's
+`LocateProtocol` found was not defined. `RedfishPlatformConfigDxe` is what
+answers now, over the CFR questions above. `gAmiSetupFormsetGuid` went with it.
 
 **4. `RedfishResourceIdentifyLibComputerSystem` cannot work on this board.** It
 matches the resource's `UUID` against SMBIOS type 1 to pick this host's system
@@ -431,8 +518,21 @@ need when reproducing — the app is launched from `/oem/usr/bin/RkLunch.sh`:
 
 ```sh
 . /etc/profile.d/RkEnv.sh          # else the binary cannot find librockit.so
-JETKVM_LOG_INFO=redfish,usb setsid /userdata/jetkvm/bin/jetkvm_app > /userdata/jetkvm/last.log 2>&1 &
+JETKVM_LOG_INFO=redfish,usb nohup setsid /userdata/jetkvm/bin/jetkvm_app \
+  > /userdata/jetkvm/redfish-verify.log 2>&1 < /dev/null &
 ```
+
+Use `nohup setsid` and a log path of your own. A bare `setsid ... &` over ssh
+does not always survive the session closing, and when the app is restarted by
+something else it truncates `last.log` — so the run you were trying to capture
+disappears just as you go to read it. (`disown` is not available on this
+BusyBox shell.)
+
+**Everything `redfish_client.go` holds is in memory and is lost on app
+restart.** That is deliberate — a stale copy would claim knowledge of a host
+that may since have changed — but it means "the collection is empty" can mean
+"the app restarted", not "the host never reported". Check for a fresh
+`JetKVM Starting Up` before concluding anything.
 
 `last.log` is the live log; `app.log` is stale. The device has no
 curl/python — to exercise the *unauthenticated host-interface path* from a
@@ -445,6 +545,10 @@ curl -X PATCH -H 'Content-Type: application/json' \
   -d '{"BootProgress":{"LastState":"SystemHardwareInitializationComplete"}}' \
   http://127.0.0.1:18080/redfish/v1/Systems/1
 ```
+
+Do **not** clean up such a tunnel with `pkill -f <the port spec>`: the wrapper
+shell's own command line contains that string, so pkill kills the shell running
+it (exit 144, no tunnel, no error). Use a fresh local port instead.
 
 ### USB enumeration is the fragile part
 

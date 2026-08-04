@@ -4,8 +4,7 @@
 #
 # Forked from RedfishPkg/RedfishPkg.dsc and extended with:
 #   * the NetworkPkg IPv4/HTTP stack (USB CDC-ECM transport, no TLS/SNP),
-#   * our platform host-interface library and a replacement platform-config
-#     driver (RedfishConfigDriver, backed by the AMI L"Setup" variable),
+#   * our platform host-interface library,
 #   * the RedfishClientPkg BIOS attribute-sync feature layer.
 #
 # Modules are compiled one at a time with `build -m <inf>`; this DSC only has to
@@ -169,7 +168,6 @@
   # ---- Our platform glue ----
   #
   NucRedfishPkg/Library/NucRedfishHostInterfaceLib/NucRedfishHostInterfaceLib.inf
-  NucRedfishPkg/RedfishConfigDriver/RedfishConfigDriver.inf
 
   #
   # One-shot UEFI application that recursively connects all controllers so the
@@ -179,8 +177,7 @@
   NucRedfishPkg/ConnectRedfishApp/ConnectRedfishApp.inf
 
   #
-  # ---- RedfishPkg core drivers (from RedfishComponents.dsc.inc, MINUS
-  #      RedfishPlatformConfigDxe which RedfishConfigDriver replaces) ----
+  # ---- RedfishPkg core drivers (from RedfishComponents.dsc.inc) ----
   #
   RedfishPkg/RestJsonStructureDxe/RestJsonStructureDxe.inf
   RedfishPkg/RedfishHostInterfaceDxe/RedfishHostInterfaceDxe.inf
@@ -206,18 +203,15 @@
   #
   # NOTE: RedfishClientPkg/HiiToRedfishBiosDxe/HiiToRedfishBiosDxe.inf is
   # intentionally OMITTED. It is an EXAMPLE driver that ships its own dummy
-  # HII/IFR varstore for the Bios schema; our RedfishConfigDriver is the real
-  # Bios attribute source (it reads/writes the AMI L"Setup" NV variable), so the
-  # demo would only publish a conflicting empty Bios form. Keep Features/Bios,
-  # BiosAttributeRegistry and Converter/Bios below -- those consume our config
-  # protocol and are the real BIOS sync path.
+  # HII/IFR varstore for the Bios schema (BiosOption1..4), which would only
+  # publish a conflicting empty Bios form. Keep Features/Bios,
+  # BiosAttributeRegistry and Converter/Bios below -- those are the real BIOS
+  # sync path.
   #
   # Boot options: HiiToRedfishBootDxe publishes its own HII form (x-UEFI-redfish
   # config languages) + reads real Boot#### via UefiBootManagerLib. It is
   # HII-form based, so it needs a config-protocol producer that can serve HII
-  # questions. RedfishConfigDriver is now a HYBRID: AMI L"Setup" for the mapped
-  # Bios rows, EFI_CONFIG_KEYWORD_HANDLER_PROTOCOL fallback for everything else
-  # (the Boot form). See RedfishConfigDriver.c.
+  # questions -- stock RedfishPlatformConfigDxe, above.
   RedfishClientPkg/HiiToRedfishBootDxe/HiiToRedfishBootDxe.inf
   RedfishClientPkg/Features/Bios/v1_0_9/Dxe/BiosDxe.inf
   RedfishClientPkg/Features/BiosAttributeRegistry/v1_3_6/BiosAttributeRegistryDxe.inf

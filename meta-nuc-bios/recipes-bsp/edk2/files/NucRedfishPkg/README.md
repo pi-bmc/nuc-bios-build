@@ -101,7 +101,8 @@ Set `PcdRedfishServiceUuid` to all-zero to match any service instead.
    FAT volume under `\EFI\drivers\`.
 2. Register the **drivers** with `efibootmgr --driver --create` (load order:
    USB-net → NetworkPkg → RegularExpression/RestJsonStructure → Redfish core →
-   `RedfishConfigDriver` → RedfishClient feature drivers). `ConnectRedfishApp.efi`
+   `RedfishPlatformConfigDxe` → RedfishClient feature drivers).
+   `ConnectRedfishApp.efi`
    is an **application**, not a driver — do not register it as a `Driver####`.
 3. Enable "Allow UEFI 3rd party driver loaded" (via the `setup_var`/`BootNext`
    step; Secure Boot is off).
@@ -111,7 +112,10 @@ Set `PcdRedfishServiceUuid` to all-zero to match any service instead.
 
 ## Open TODOs (functional wiring)
 
-- `RedfishConfigDriver.c` — the `AMI_SETUP_MAP_ENTRY` table maps Redfish BIOS
-  attributes to `Setup`-variable byte offsets (from the extracted IFR). Verify
-  each offset against this exact firmware build (`RYBDWi35.86A.0386`).
+- BIOS attributes come from coreboot's CFR, rendered as HII by
+  `CfrSetupMenuDxe` and harvested by stock `RedfishPlatformConfigDxe`. There
+  used to be a `RedfishConfigDriver` here that read the stock AMI Aptio
+  `L"Setup"` variable instead; it was removed once coreboot replaced that
+  firmware, since its offsets described a variable that no longer exists and
+  it produced the same protocol GUID as the driver that actually answers.
 - End-to-end only provable against the live BMC over the ECM link.

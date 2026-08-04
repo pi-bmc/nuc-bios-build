@@ -47,9 +47,8 @@ index 8dce58f5c3..3aaedf0115 100644
    # Dfine the maximum size of the capsule image without a reset flag that the platform can support.
    DEFINE MAX_SIZE_NON_POPULATE_CAPSULE = 0xa00000
  
-@@ -1044,6 +1051,26 @@
+@@ -1043,5 +1050,25 @@
    #
-   NucRedfishPkg/RedfishConfigDriver/RedfishConfigDriver.inf
    NucRedfishPkg/NucRedfishSyncDxe/NucRedfishSyncDxe.inf
 +
 +#
@@ -78,9 +77,8 @@ diff --git a/UefiPayloadPkg/UefiPayloadPkg.fdf b/UefiPayloadPkg/UefiPayloadPkg.f
 index 749e0bba49..6474cb0f55 100644
 --- a/UefiPayloadPkg/UefiPayloadPkg.fdf
 +++ b/UefiPayloadPkg/UefiPayloadPkg.fdf
-@@ -384,6 +384,9 @@ INF MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
+@@ -383,5 +383,8 @@ INF MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
    INF MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcEcm/UsbCdcEcm.inf
-   INF NucRedfishPkg/RedfishConfigDriver/RedfishConfigDriver.inf
    INF NucRedfishPkg/NucRedfishSyncDxe/NucRedfishSyncDxe.inf
 +!if $(REDFISH_CLIENT) == TRUE
 +  !include RedfishClientPkg/RedfishClient.fdf.inc

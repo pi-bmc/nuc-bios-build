@@ -54,7 +54,7 @@ SRC_URI = "gitsm://github.com/tianocore/edk2.git;protocol=https;branch=master;na
 # point) and features this board is configured to use (CFR SetupMenu,
 # PRIORITIZE_INTERNAL, the BGRT logo position).
 #
-# 0019-0025: local. All seven are applied unconditionally; what they add is
+# 0019-0026: local. All eight are applied unconditionally; what they add is
 # gated by DSC defines that default FALSE, so the -D flags below decide what is
 # actually built. Making the *patches* conditional instead would be fragile --
 # 0021, 0022 and 0023 edit regions 0020 creates or sits beside.
@@ -84,6 +84,7 @@ SRC_URI += "${@' '.join('file://' + p for p in [ \
     '0023-UefiPayloadPkg-give-NetworkPkg-the-protocol-producer.patch', \
     '0024-UefiPayloadPkg-retry-Redfish-HTTP-requests-at-least-.patch', \
     '0025-UefiPayloadPkg-CfrSetupMenuDxe-publish-CFR-options-a.patch', \
+    '0026-UefiPayloadPkg-let-SMMSTORE-hold-authenticated-varia.patch', \
     ])}"
 
 # The one patch that applies to edk2-redfish-client rather than edk2. Numbered

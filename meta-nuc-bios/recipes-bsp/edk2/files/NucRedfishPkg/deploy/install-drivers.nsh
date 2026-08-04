@@ -56,8 +56,8 @@ bcfg driver add 19 RedfishDiscoverDxe.efi               "NucRfsh:Discover"
 bcfg driver add 20 RedfishHttpDxe.efi                   "NucRfsh:RedfishHttp"
 bcfg driver add 21 RedfishConfigHandlerDriver.efi       "NucRfsh:ConfigHandler"
 
-#  --- our platform config producer (AMI Setup-var backed) ---
-bcfg driver add 22 RedfishConfigDriver.efi              "NucRfsh:PlatformConfig"
+#  --- platform config producer ---
+bcfg driver add 22 RedfishPlatformConfigDxe.efi         "NucRfsh:PlatformConfig"
 
 #  --- RedfishClientPkg feature layer (sync engine + domains) ---
 bcfg driver add 23 RedfishFeatureCoreDxe.efi            "NucRfsh:FeatureCore"

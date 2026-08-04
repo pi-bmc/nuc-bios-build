@@ -15,7 +15,7 @@ Alongside them:
     EFI_SIMPLE_NETWORK_PROTOCOL. UefiPayloadPkg never references the in-tree
     USB network drivers.
 
-  * NucRedfishPkg's RedfishConfigDriver and NucRedfishSyncDxe.
+  * NucRedfishPkg's NucRedfishSyncDxe.
 
   * Credential and host-interface library overrides. RedfishLibs.dsc.inc
     resolves both to IPMI-driven instances, and this board has no IPMI
@@ -37,9 +37,9 @@ conversion drops the unused tail -- so this costs nothing in CBFS.
 Upstream-Status: Inappropriate [platform specific]
 Signed-off-by: nuc-bios-build <nbatkins@gmail.com>
 ---
- UefiPayloadPkg/UefiPayloadPkg.dsc | 69 ++++++++++++++++++++++++++++++-
- UefiPayloadPkg/UefiPayloadPkg.fdf | 14 ++++++-
- 2 files changed, 80 insertions(+), 3 deletions(-)
+ UefiPayloadPkg/UefiPayloadPkg.dsc | 68 ++++++++++++++++++++++++++++++-
+ UefiPayloadPkg/UefiPayloadPkg.fdf | 13 ++++++-
+ 2 files changed, 78 insertions(+), 3 deletions(-)
 
 diff --git a/UefiPayloadPkg/UefiPayloadPkg.dsc b/UefiPayloadPkg/UefiPayloadPkg.dsc
 index 277de0fe4f..2c97d6c3bc 100644
@@ -74,7 +74,7 @@ index 277de0fe4f..2c97d6c3bc 100644
  !if $(USE_CBMEM_FOR_CONSOLE) == FALSE
    !if $(SOURCE_DEBUG_ENABLE)
      gEfiMdePkgTokenSpaceGuid.PcdDebugPropertyMask|0x17
-@@ -972,6 +985,60 @@
+@@ -972,6 +985,59 @@
  [Defines]
    DEFINE PLATFORMX64_ENABLE = TRUE
    !include NetworkPkg/Network.dsc.inc
@@ -126,10 +126,9 @@ index 277de0fe4f..2c97d6c3bc 100644
 +  MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/NetworkCommon.inf
 +  MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcEcm/UsbCdcEcm.inf
 +  #
-+  # RedfishConfigDriver and the host-side client that consumes what it
-+  # discovers.
++  # The host-side consumer of EDKII_REDFISH_CONFIG_HANDLER_PROTOCOL. Stock
++  # RedfishPlatformConfigDxe (above) is what answers for HII.
 +  #
-+  NucRedfishPkg/RedfishConfigDriver/RedfishConfigDriver.inf
 +  NucRedfishPkg/NucRedfishSyncDxe/NucRedfishSyncDxe.inf
 +!endif
  !endif
@@ -150,7 +149,7 @@ index 1e1df9e533..3a7e5b6d60 100644
  !endif
  
  ################################################################################
-@@ -356,6 +356,16 @@ INF MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
+@@ -356,6 +356,15 @@ INF MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
  #
  !if $(NETWORK_DRIVER_ENABLE) == TRUE
    !include NetworkPkg/Network.fdf.inc
@@ -161,7 +160,6 @@ index 1e1df9e533..3a7e5b6d60 100644
 +  !include RedfishPkg/Redfish.fdf.inc
 +  INF MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/NetworkCommon.inf
 +  INF MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcEcm/UsbCdcEcm.inf
-+  INF NucRedfishPkg/RedfishConfigDriver/RedfishConfigDriver.inf
 +  INF NucRedfishPkg/NucRedfishSyncDxe/NucRedfishSyncDxe.inf
 +!endif
  !endif

@@ -22,20 +22,31 @@ The CFR option name is the natural attribute name -- it is already the stable
 machine-readable identifier ("power_on_after_fail"), whereas the UI name is
 prose and may be translated.
 
-Setting an existing token in a new language also adds that language to the
-package list, which is how RedfishPlatformConfigDxe discovers that this HII
-handle supports the schema at all, so no separate registration is needed.
+The string package for that language has to be created first. A driver whose
+strings are compiled from a .uni gets one per language for free, so this step
+normally has no equivalent; the CFR menu is built at runtime from coreboot's
+blob and starts life with en-US alone. EFI_HII_STRING_PROTOCOL.SetString only
+walks packages that already exist and returns EFI_NOT_FOUND for an unknown
+language -- it never creates one, so registering into a fresh language fails
+outright:
+
+  CFR: failed to publish "power_on_after_fail" as a Redfish attribute
+
+NewString is the call that does create it, and it also back-fills a blank block
+for every string ID already in use, so the new package's token space stays
+aligned with en-US. That alignment is what lets SetString then address prompt
+tokens minted before the package existed, and it is preserved afterwards
+because each later NewString appends a blank to every language.
 
 Upstream-Status: Inappropriate [platform specific]
 Signed-off-by: nuc-bios-build <nbatkins@gmail.com>
 ---
- .../CfrSetupMenuDxe/CfrSetupMenuDxe.inf       |  1 +
- UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.h    | 19 +++++
- UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c | 72 +++++++++++++++++++
- 3 files changed, 92 insertions(+)
+ UefiPayloadPkg/CfrSetupMenuDxe/CfrSetupMenuDxe.inf |  1 +
+ UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.h         | 26 ++++++++++++++++++++++++++
+ UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c      | 142 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 169 insertions(+)
 
 diff --git a/UefiPayloadPkg/CfrSetupMenuDxe/CfrSetupMenuDxe.inf b/UefiPayloadPkg/CfrSetupMenuDxe/CfrSetupMenuDxe.inf
-index ceaa96bee3..7ca03331d6 100644
 --- a/UefiPayloadPkg/CfrSetupMenuDxe/CfrSetupMenuDxe.inf
 +++ b/UefiPayloadPkg/CfrSetupMenuDxe/CfrSetupMenuDxe.inf
 @@ -36,6 +36,7 @@
@@ -47,10 +58,9 @@ index ceaa96bee3..7ca03331d6 100644
    UefiHiiServicesLib
    UefiLib
 diff --git a/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.h b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.h
-index 9754779e29..a2234ad0ae 100644
 --- a/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.h
 +++ b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.h
-@@ -138,4 +138,23 @@ SetupMenuCallback (
+@@ -138,4 +138,30 @@
    OUT EFI_BROWSER_ACTION_REQUEST             *ActionRequest
    );
  
@@ -67,6 +77,13 @@ index 9754779e29..a2234ad0ae 100644
 +#define CFR_REDFISH_ATTRIBUTE_PREFIX  L"/Bios/Attributes/"
 +
 +//
++// Printable name for the string package created to hold the language above.
++// EFI_HII_STRING_PROTOCOL.NewString requires one when it has to create a
++// package for a language the package list does not already carry.
++//
++#define CFR_REDFISH_LANGUAGE_NAME  L"Redfish BIOS attributes"
++
++//
 +// Longest config language built from the prefix above plus a CFR option name.
 +// CFR names are short machine identifiers; 128 characters is the limit
 +// RedfishPlatformConfigDxe itself works to (MAX_X_UEFI_REDFISH_STRING_SIZE).
@@ -75,21 +92,86 @@ index 9754779e29..a2234ad0ae 100644
 +
  #endif
 diff --git a/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c
-index ef4801629c..3e3507b1e3 100644
 --- a/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c
 +++ b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c
-@@ -15,6 +15,7 @@
+@@ -15,6 +15,8 @@
  #include <Library/HiiLib.h>
  #include <Library/HobLib.h>
  #include <Library/MemoryAllocationLib.h>
 +#include <Library/PrintLib.h>
++#include <Library/UefiHiiServicesLib.h>
  #include <Library/VariablePolicyHelperLib.h>
  #include <Library/UefiRuntimeServicesTableLib.h>
  #include <Guid/CfrSetupMenuGuid.h>
-@@ -60,6 +61,73 @@ CfrConvertVarBinaryToStrings (
+@@ -60,6 +62,142 @@
    }
  }
  
++//
++// Set once the x-UEFI-redfish string package exists on the CFR HII handle.
++//
++STATIC BOOLEAN  mCfrRedfishLanguageReady = FALSE;
++
++/**
++  Make sure this driver's HII package list carries a string package for the
++  x-UEFI-redfish language, so strings can be set in it.
++
++  EFI_HII_STRING_PROTOCOL.SetString only walks string packages that already
++  exist and returns EFI_NOT_FOUND for a language the package list has never
++  carried -- it will not create one. NewString will: handed an unmatched
++  language it allocates a package for it and back-fills a blank block for every
++  string ID already in use, keeping the token space aligned with en-US. That
++  alignment is the point. It is what lets the caller then address a prompt
++  token that was created before this package existed, and it is maintained
++  afterwards because every later NewString appends a blank to each language.
++
++  Strings compiled from a .uni carry every language in the source, so this step
++  has no equivalent in a normal driver; the CFR menu is built at runtime from
++  coreboot's blob and starts out with en-US alone.
++
++  @retval TRUE   The package exists and strings can be set in it.
++  @retval FALSE  It could not be created; the caller should give up.
++**/
++STATIC
++BOOLEAN
++CfrEnsureRedfishStringPackage (
++  VOID
++  )
++{
++  EFI_STATUS     Status;
++  EFI_STRING_ID  Placeholder;
++
++  if (mCfrRedfishLanguageReady) {
++    return TRUE;
++  }
++
++  //
++  // The value is irrelevant -- this call exists for the package it creates as a
++  // side effect. It costs one string ID.
++  //
++  Status = gHiiString->NewString (
++                         gHiiString,
++                         mSetupMenuPrivate.HiiHandle,
++                         &Placeholder,
++                         CFR_REDFISH_SCHEMA_LANGUAGE,
++                         CFR_REDFISH_LANGUAGE_NAME,
++                         L"",
++                         NULL
++                         );
++  if (EFI_ERROR (Status)) {
++    DEBUG ((
++      DEBUG_ERROR,
++      "CFR: cannot create the %a string package - %r\n",
++      CFR_REDFISH_SCHEMA_LANGUAGE,
++      Status
++      ));
++    return FALSE;
++  }
++
++  mCfrRedfishLanguageReady = TRUE;
++  return TRUE;
++}
++
 +/**
 +  Publish one CFR option to Redfish as a BIOS attribute.
 +
@@ -134,10 +216,14 @@ index ef4801629c..3e3507b1e3 100644
 +    (CHAR8 *)CfrOptionName->data
 +    );
 +
++  if (!CfrEnsureRedfishStringPackage ()) {
++    return;
++  }
++
 +  //
-+  // Setting an existing token in a different language adds that language to the
-+  // package list, which is also how RedfishPlatformConfigDxe discovers that this
-+  // HII handle supports the schema at all.
++  // The package list now advertises the x-UEFI-redfish language, which is how
++  // RedfishPlatformConfigDxe discovers this HII handle serves the schema at all;
++  // this string is what makes the individual question visible within it.
 +  //
 +  Result = HiiSetString (
 +             mSetupMenuPrivate.HiiHandle,
@@ -160,7 +246,7 @@ index ef4801629c..3e3507b1e3 100644
  /**
    CFR_VARBINARY records are used to store a list of dependency values.
    Get a pointer to an array of enum values and its length.
-@@ -544,6 +612,8 @@ CfrProcessNumericOption (
+@@ -544,6 +682,8 @@
    CfrConvertVarBinaryToStrings (CfrDisplayName, &HiiDisplayString, &HiiDisplayStringId);
    FreePool (HiiDisplayString);
  
@@ -169,7 +255,7 @@ index ef4801629c..3e3507b1e3 100644
    if (CfrHelpText != NULL) {
      CfrConvertVarBinaryToStrings (CfrHelpText, &HiiHelpText, &HiiHelpTextId);
      FreePool (HiiHelpText);
-@@ -799,6 +869,8 @@ CfrProcessCharacterOption (
+@@ -799,6 +939,8 @@
    CfrConvertVarBinaryToStrings (CfrDisplayName, &HiiDisplayString, &HiiDisplayStringId);
    FreePool (HiiDisplayString);
  
@@ -179,5 +265,5 @@ index ef4801629c..3e3507b1e3 100644
      CfrConvertVarBinaryToStrings (CfrHelpText, &HiiHelpText, &HiiHelpTextId);
      FreePool (HiiHelpText);
 -- 
-2.55.0
+2.51.0
 

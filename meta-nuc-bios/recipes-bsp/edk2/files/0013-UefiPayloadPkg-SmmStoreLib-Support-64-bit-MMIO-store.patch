@@ -1,7 +1,7 @@
 From c4641eea15b80728756bb028455ba01692eb5715 Mon Sep 17 00:00:00 2001
 From: Patrick Rudolph <patrick.rudolph@9elements.com>
 Date: Wed, 7 May 2025 17:30:33 +0200
-Subject: [PATCH 13/24] UefiPayloadPkg: SmmStoreLib: Support 64-bit MMIO store
+Subject: [PATCH 13/25] UefiPayloadPkg: SmmStoreLib: Support 64-bit MMIO store
 
 On AMD platforms the SPI flash might be mapped in high MMIO.
 To migitate the problem coreboot was updated to advertise a

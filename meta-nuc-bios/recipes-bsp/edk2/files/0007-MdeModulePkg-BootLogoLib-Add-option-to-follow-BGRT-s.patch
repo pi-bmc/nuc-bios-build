@@ -1,7 +1,7 @@
 From 2180e106d4b1dac592f78fa18c83a6d75d3c8439 Mon Sep 17 00:00:00 2001
 From: Sean Rhodes <sean@starlabs.systems>
 Date: Sun, 10 Jul 2022 19:23:59 +0100
-Subject: [PATCH 07/24] MdeModulePkg/BootLogoLib: Add option to follow BGRT
+Subject: [PATCH 07/25] MdeModulePkg/BootLogoLib: Add option to follow BGRT
  specification
 
 Add an option to position the logo 38.2% from the top of the screen,

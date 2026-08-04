@@ -1,0 +1,183 @@
+From b6bd98027d7db289f34fbb71f4ee3e7f591ed9b9 Mon Sep 17 00:00:00 2001
+From: appkins <nbatkins@gmail.com>
+Date: Tue, 4 Aug 2026 16:59:49 -0500
+Subject: [PATCH 25/25] UefiPayloadPkg/CfrSetupMenuDxe: publish CFR options as
+ Redfish BIOS attributes
+
+The payload advertises a BIOS schema over the Redfish host interface, but the
+only attributes in it are BiosOption1 through BiosOption4 -- the four
+placeholders from RedfishClientPkg's own sample form (HiiToRedfishBiosDxe's
+HiiToRedfishBiosVfr.vfr). The board's actual settings, the ones coreboot
+describes in CFR and this driver renders as the setup menu, are invisible.
+
+That is not a gap in the data. It is that RedfishPlatformConfigDxe decides
+whether an HII question is visible to Redfish by looking the question's *prompt
+string ID* up a second time, in the "x-UEFI-redfish-<schema>.<version>"
+language: if a string exists there its text is the question's Redfish config
+language, and if not the question is skipped. Nothing was registering those
+strings, so nothing was harvested.
+
+Register one per option, against the same string token the prompt already uses.
+The CFR option name is the natural attribute name -- it is already the stable
+machine-readable identifier ("power_on_after_fail"), whereas the UI name is
+prose and may be translated.
+
+Setting an existing token in a new language also adds that language to the
+package list, which is how RedfishPlatformConfigDxe discovers that this HII
+handle supports the schema at all, so no separate registration is needed.
+
+Upstream-Status: Inappropriate [platform specific]
+Signed-off-by: nuc-bios-build <nbatkins@gmail.com>
+---
+ .../CfrSetupMenuDxe/CfrSetupMenuDxe.inf       |  1 +
+ UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.h    | 19 +++++
+ UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c | 72 +++++++++++++++++++
+ 3 files changed, 92 insertions(+)
+
+diff --git a/UefiPayloadPkg/CfrSetupMenuDxe/CfrSetupMenuDxe.inf b/UefiPayloadPkg/CfrSetupMenuDxe/CfrSetupMenuDxe.inf
+index ceaa96bee3..7ca03331d6 100644
+--- a/UefiPayloadPkg/CfrSetupMenuDxe/CfrSetupMenuDxe.inf
++++ b/UefiPayloadPkg/CfrSetupMenuDxe/CfrSetupMenuDxe.inf
+@@ -36,6 +36,7 @@
+   HiiLib
+   HobLib
+   MemoryAllocationLib
++  PrintLib
+   VariablePolicyHelperLib
+   UefiHiiServicesLib
+   UefiLib
+diff --git a/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.h b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.h
+index 9754779e29..a2234ad0ae 100644
+--- a/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.h
++++ b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.h
+@@ -138,4 +138,23 @@ SetupMenuCallback (
+   OUT EFI_BROWSER_ACTION_REQUEST             *ActionRequest
+   );
+ 
++//
++// Exposing the CFR menu to Redfish.
++//
++// RedfishPlatformConfigDxe treats an HII question as Redfish-visible when the
++// question's prompt string ID also resolves in the
++// "x-UEFI-redfish-<schema>.<version>" language, and takes that string as the
++// question's Redfish config language. Bios.v1_0_9 is the schema
++// edk2-redfish-client's BiosDxe consumes.
++//
++#define CFR_REDFISH_SCHEMA_LANGUAGE   "x-UEFI-redfish-Bios.v1_0_9"
++#define CFR_REDFISH_ATTRIBUTE_PREFIX  L"/Bios/Attributes/"
++
++//
++// Longest config language built from the prefix above plus a CFR option name.
++// CFR names are short machine identifiers; 128 characters is the limit
++// RedfishPlatformConfigDxe itself works to (MAX_X_UEFI_REDFISH_STRING_SIZE).
++//
++#define CFR_REDFISH_CONFIG_LANG_MAX  128
++
+ #endif
+diff --git a/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c
+index ef4801629c..3e3507b1e3 100644
+--- a/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c
++++ b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c
+@@ -15,6 +15,7 @@
+ #include <Library/HiiLib.h>
+ #include <Library/HobLib.h>
+ #include <Library/MemoryAllocationLib.h>
++#include <Library/PrintLib.h>
+ #include <Library/VariablePolicyHelperLib.h>
+ #include <Library/UefiRuntimeServicesTableLib.h>
+ #include <Guid/CfrSetupMenuGuid.h>
+@@ -60,6 +61,73 @@ CfrConvertVarBinaryToStrings (
+   }
+ }
+ 
++/**
++  Publish one CFR option to Redfish as a BIOS attribute.
++
++  RedfishPlatformConfigDxe decides whether an HII question is visible to Redfish
++  by looking that question's *prompt string ID* up a second time, in the
++  "x-UEFI-redfish-<schema>.<version>" language. If a string exists there, its
++  text is the question's Redfish config language and the question is harvested;
++  if not, the question is invisible. So exposing the coreboot CFR menu is a
++  matter of registering a second string against the same token.
++
++  The CFR option name is the natural attribute name: it is already the stable
++  machine-readable identifier ("power_on_after_fail"), as opposed to the UI name
++  which is prose and may be translated.
++
++  Without this the payload advertises a BIOS schema whose only members are the
++  four placeholders from RedfishClientPkg's own sample form -- BiosOption1
++  through BiosOption4 -- while the board's real settings stay invisible.
++
++  @param[in] CfrOptionName   The CFR option's machine name.
++  @param[in] PromptStringId  HII string ID used as the question's prompt.
++**/
++STATIC
++VOID
++EFIAPI
++CfrPublishRedfishAttribute (
++  IN CFR_VARBINARY  *CfrOptionName,
++  IN EFI_STRING_ID  PromptStringId
++  )
++{
++  CHAR16         ConfigLanguage[CFR_REDFISH_CONFIG_LANG_MAX];
++  EFI_STRING_ID  Result;
++
++  if ((CfrOptionName == NULL) || (PromptStringId == 0)) {
++    return;
++  }
++
++  UnicodeSPrint (
++    ConfigLanguage,
++    sizeof (ConfigLanguage),
++    L"%s%a",
++    CFR_REDFISH_ATTRIBUTE_PREFIX,
++    (CHAR8 *)CfrOptionName->data
++    );
++
++  //
++  // Setting an existing token in a different language adds that language to the
++  // package list, which is also how RedfishPlatformConfigDxe discovers that this
++  // HII handle supports the schema at all.
++  //
++  Result = HiiSetString (
++             mSetupMenuPrivate.HiiHandle,
++             PromptStringId,
++             ConfigLanguage,
++             CFR_REDFISH_SCHEMA_LANGUAGE
++             );
++  if (Result == 0) {
++    DEBUG ((
++      DEBUG_ERROR,
++      "CFR: failed to publish \"%a\" as a Redfish attribute\n",
++      (CHAR8 *)CfrOptionName->data
++      ));
++    return;
++  }
++
++  DEBUG ((DEBUG_INFO, "CFR: Redfish attribute %s\n", ConfigLanguage));
++}
++
+ /**
+   CFR_VARBINARY records are used to store a list of dependency values.
+   Get a pointer to an array of enum values and its length.
+@@ -544,6 +612,8 @@ CfrProcessNumericOption (
+   CfrConvertVarBinaryToStrings (CfrDisplayName, &HiiDisplayString, &HiiDisplayStringId);
+   FreePool (HiiDisplayString);
+ 
++  CfrPublishRedfishAttribute (CfrOptionName, HiiDisplayStringId);
++
+   if (CfrHelpText != NULL) {
+     CfrConvertVarBinaryToStrings (CfrHelpText, &HiiHelpText, &HiiHelpTextId);
+     FreePool (HiiHelpText);
+@@ -799,6 +869,8 @@ CfrProcessCharacterOption (
+   CfrConvertVarBinaryToStrings (CfrDisplayName, &HiiDisplayString, &HiiDisplayStringId);
+   FreePool (HiiDisplayString);
+ 
++  CfrPublishRedfishAttribute (CfrOptionName, HiiDisplayStringId);
++
+   if (CfrHelpText != NULL) {
+     CfrConvertVarBinaryToStrings (CfrHelpText, &HiiHelpText, &HiiHelpTextId);
+     FreePool (HiiHelpText);
+-- 
+2.55.0
+

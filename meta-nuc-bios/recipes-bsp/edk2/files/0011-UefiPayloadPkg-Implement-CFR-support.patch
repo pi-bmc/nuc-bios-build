@@ -1,7 +1,7 @@
 From 39907bc79cfa3f4f0879c9b662a64bd9fbbf2ac2 Mon Sep 17 00:00:00 2001
 From: Benjamin Doron <benjamin.doron@9elements.com>
 Date: Thu, 20 Apr 2023 20:43:32 -0400
-Subject: [PATCH 11/24] UefiPayloadPkg: Implement CFR support
+Subject: [PATCH 11/25] UefiPayloadPkg: Implement CFR support
 
 Squash down of multiple commits:
 

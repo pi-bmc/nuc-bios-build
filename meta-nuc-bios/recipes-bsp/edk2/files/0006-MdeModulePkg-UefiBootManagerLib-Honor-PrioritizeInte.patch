@@ -1,7 +1,7 @@
 From a9cbee4fb49bb516a2bc48ebfe626601b141979b Mon Sep 17 00:00:00 2001
 From: Matt DeVillier <matt.devillier@gmail.com>
 Date: Sat, 4 Apr 2020 18:18:59 -0500
-Subject: [PATCH 06/24] MdeModulePkg/UefiBootManagerLib: Honor
+Subject: [PATCH 06/25] MdeModulePkg/UefiBootManagerLib: Honor
  PrioritizeInternal for boot ordering
 
 - Add Boot Maintenance Manager formset GUID to UefiBootManagerLib and use it

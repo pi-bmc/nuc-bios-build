@@ -1,7 +1,7 @@
 From 6198fa2d86b2438bb05818c044820181ed42dc65 Mon Sep 17 00:00:00 2001
 From: appkins <nbatkins@gmail.com>
 Date: Tue, 4 Aug 2026 13:05:00 -0500
-Subject: [PATCH 20/24] UefiPayloadPkg: wire in the Redfish host-interface
+Subject: [PATCH 20/25] UefiPayloadPkg: wire in the Redfish host-interface
  stack
 
 UefiPayloadPkg has no Redfish support of its own, but it already carries

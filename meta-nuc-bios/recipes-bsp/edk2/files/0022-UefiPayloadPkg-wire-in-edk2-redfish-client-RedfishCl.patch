@@ -1,7 +1,7 @@
 From 76e394e2abf5f4ad62fe74fb37657d2d3113e12c Mon Sep 17 00:00:00 2001
 From: appkins <nbatkins@gmail.com>
 Date: Tue, 4 Aug 2026 13:06:13 -0500
-Subject: [PATCH 22/24] UefiPayloadPkg: wire in edk2-redfish-client
+Subject: [PATCH 22/25] UefiPayloadPkg: wire in edk2-redfish-client
  (RedfishClientPkg)
 
 RedfishPkg discovers the service and produces REST EX; the feature layer that

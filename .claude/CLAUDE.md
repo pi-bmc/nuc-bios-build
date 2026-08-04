@@ -265,6 +265,39 @@ gin fell through to the web UI's `index.html` — which is why
 `RedfishTaskServiceDxe` reported `Device Error` rather than a 404. See
 `redfish_client.go` in the kvm checkout.
 
+**edk2-redfish-client is a HII bridge, not an inventory agent.** This is the
+single most useful thing to know about it, and it is not obvious from the
+package name. Every feature driver's only data source is
+`EDKII_REDFISH_PLATFORM_CONFIG_PROTOCOL` — HII questions carrying a string in
+the `x-UEFI-redfish-<schema>.<version>` language. `MemoryDxe`'s INF lists no
+`gEfiSmbiosProtocolGuid` and no SMBIOS library at all. So:
+
+- **Anything that is *inventory* has to come from somewhere else.** `MemoryDxe`
+  walks all 38 Memory properties, misses every one, and POSTs an empty
+  resource. The data was never absent — coreboot publishes complete SMBIOS
+  type 17 (two Crucial DDR3-1600 SODIMMs with part numbers) and the OS reads
+  it. `NucRedfishSyncDxe` reports the DIMMs directly, the same way it already
+  reports type 0 and type 1. The Memory feature drivers are dropped from the
+  build (patch 0100) because an empty member is worse than no member: it looks
+  like inventory and contains none.
+
+- **Anything that is *configuration* has to be published as HII with the right
+  language string.** The four `BiosOption1..4` attributes that show up by
+  default are RedfishClientPkg's own sample form
+  (`HiiToRedfishBiosDxe/HiiToRedfishBiosVfr.vfr`), not this board's settings.
+  Patch 0025 makes `CfrSetupMenuDxe` register
+  `/Bios/Attributes/<cfr_option_name>` against each question's prompt string
+  token in the `x-UEFI-redfish-Bios.v1_0_9` language, which is exactly the
+  lookup `RedfishPlatformConfigDxe` performs to decide whether a question is
+  visible to Redfish.
+
+`NucRedfishPkg/RedfishConfigDriver` is a leftover from before this: its
+`mAmiSetupMap[]` describes the AMI Aptio `L"Setup"` variable of the *stock
+Intel BIOS* (GUID `EC87D643-…`, 566-byte varstore, `FastBoot` at
+`VarOffset=0x0014`). This machine has not run that firmware since coreboot was
+flashed, so all 15 rows describe a BIOS that is not there. Stock
+`RedfishPlatformConfigDxe` is what actually answers.
+
 **4. `RedfishResourceIdentifyLibComputerSystem` cannot work on this board.** It
 matches the resource's `UUID` against SMBIOS type 1 to pick this host's system
 out of a BMC managing several. coreboot leaves that UUID unset here

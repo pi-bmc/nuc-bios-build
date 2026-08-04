@@ -576,6 +576,56 @@ HandleBootOverride (
 }
 
 /**
+  Report the host's populated DIMMs to the BMC's Memory collection.
+
+  One POST per module. The BMC keys each member on DeviceLocator, so re-running
+  this on every boot updates the existing members rather than accumulating
+  duplicates -- which matters because the collection is not persisted across a
+  BMC restart and has to be able to rebuild itself from whatever boots next.
+
+  Failures are logged and otherwise ignored: memory inventory is useful, but it
+  is not worth abandoning the boot-override exchange that follows over.
+
+  @param[in] Service  The Redfish service to report to.
+**/
+STATIC
+VOID
+ReportMemory (
+  IN REDFISH_SERVICE  Service
+  )
+{
+  NUC_REDFISH_MEMORY_MODULE  Modules[NUC_REDFISH_MEMORY_MAX];
+  REDFISH_RESPONSE           Response;
+  EFI_STATUS                 Status;
+  UINTN                      Count;
+  UINTN                      Index;
+  CHAR8                      *Body;
+
+  Status = NucRedfishCollectMemory (Modules, NUC_REDFISH_MEMORY_MAX, &Count);
+  if (EFI_ERROR (Status) || (Count == 0)) {
+    DEBUG ((DEBUG_ERROR, "NucRedfishSync: no memory devices to report - %r\n", Status));
+    return;
+  }
+
+  for (Index = 0; Index < Count; Index++) {
+    Body   = NULL;
+    Status = NucRedfishBuildMemoryPost (&Modules[Index], &Body);
+    if (EFI_ERROR (Status) || (Body == NULL)) {
+      continue;
+    }
+
+    ZeroMem (&Response, sizeof (Response));
+    Status = RedfishHttpPostResource (Service, NUC_REDFISH_MEMORY_URI, Body, &Response);
+    LogResult ("POST", NUC_REDFISH_MEMORY_URI, Status, &Response);
+    RedfishHttpFreeResponse (&Response);
+
+    FreePool (Body);
+  }
+
+  DEBUG ((DEBUG_ERROR, "NucRedfishSync: reported %d memory device(s)\n", Count));
+}
+
+/**
   Perform the host-interface exchange against the discovered Redfish service.
 
   @param[in] ServiceInfo  Discovered Redfish service information.
@@ -655,6 +705,11 @@ NucRedfishSync (
 
     FreePool (Patch);
   }
+
+  //
+  // 2b. Report the DIMMs.
+  //
+  ReportMemory (Service);
 
   //
   // 3. Read back the system, including any boot override the BMC wants applied.

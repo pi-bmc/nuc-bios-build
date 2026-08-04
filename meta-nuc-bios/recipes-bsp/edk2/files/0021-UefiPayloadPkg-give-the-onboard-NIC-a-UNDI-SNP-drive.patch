@@ -1,7 +1,7 @@
 From d946c3f740dd6abe30a99b85f4fe0657febab75e Mon Sep 17 00:00:00 2001
 From: appkins <nbatkins@gmail.com>
 Date: Tue, 4 Aug 2026 13:05:43 -0500
-Subject: [PATCH 21/24] UefiPayloadPkg: give the onboard NIC a UNDI/SNP driver,
+Subject: [PATCH 21/25] UefiPayloadPkg: give the onboard NIC a UNDI/SNP driver,
  and prune the rest
 
 Two related changes to what BDS offers as a network boot device.

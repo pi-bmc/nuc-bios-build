@@ -217,6 +217,208 @@ NucRedfishCollectInventory (
 }
 
 /**
+  Map an SMBIOS type 17 MemoryType to the Redfish MemoryDeviceType enumeration.
+
+  Returns NULL for values with no Redfish equivalent, which the caller omits
+  rather than guessing -- a wrong enum is worse than an absent property.
+**/
+STATIC
+CONST CHAR8 *
+RedfishMemoryDeviceType (
+  IN UINT8  SmbiosMemoryType
+  )
+{
+  switch (SmbiosMemoryType) {
+    case MemoryTypeSdram:    return "SDRAM";
+    case MemoryTypeDdr:      return "DDR";
+    case MemoryTypeDdr2:     return "DDR2";
+    case MemoryTypeDdr3:     return "DDR3";
+    case MemoryTypeDdr4:     return "DDR4";
+    case MemoryTypeLpddr:    return "LPDDR_SDRAM";
+    case MemoryTypeLpddr2:   return "LPDDR2_SDRAM";
+    case MemoryTypeLpddr3:   return "LPDDR3_SDRAM";
+    case MemoryTypeLpddr4:   return "LPDDR4_SDRAM";
+    default:                 return NULL;
+  }
+}
+
+/**
+  Map an SMBIOS type 17 FormFactor to the Redfish BaseModuleType enumeration.
+**/
+STATIC
+CONST CHAR8 *
+RedfishBaseModuleType (
+  IN UINT8  FormFactor
+  )
+{
+  switch (FormFactor) {
+    case MemoryFormFactorSodimm: return "SO_DIMM";
+    case MemoryFormFactorDimm:   return "UDIMM";
+    case MemoryFormFactorRimm:   return "RDIMM";
+    case MemoryFormFactorFbDimm: return "LRDIMM";
+    default:                     return NULL;
+  }
+}
+
+/**
+  Decode the type 17 size fields into MiB.
+
+  SMBIOS overloads one 16-bit field: bit 15 selects KiB rather than MiB, 0
+  means the socket is empty, 0xFFFF means unknown, and 0x7FFF means "too large
+  to express here, see ExtendedSize". Returns 0 for empty or unknown, which the
+  caller treats as "do not report this socket".
+**/
+STATIC
+UINT32
+RedfishMemoryCapacityMiB (
+  IN SMBIOS_TABLE_TYPE17  *Type17
+  )
+{
+  if ((Type17->Size == 0) || (Type17->Size == 0xFFFF)) {
+    return 0;
+  }
+
+  if (Type17->Size == 0x7FFF) {
+    //
+    // ExtendedSize arrived in SMBIOS 2.7; only read it if the record is long
+    // enough to contain it.
+    //
+    if (Type17->Hdr.Length < OFFSET_OF (SMBIOS_TABLE_TYPE17, ExtendedSize) + sizeof (Type17->ExtendedSize)) {
+      return 0;
+    }
+
+    return Type17->ExtendedSize & 0x7FFFFFFF;
+  }
+
+  if ((Type17->Size & BIT15) != 0) {
+    //
+    // Value is in KiB. Round down; a sub-MiB DIMM is not a thing this needs to
+    // represent precisely.
+    //
+    return (UINT32)(Type17->Size & 0x7FFF) / 1024;
+  }
+
+  return Type17->Size;
+}
+
+EFI_STATUS
+NucRedfishCollectMemory (
+  OUT NUC_REDFISH_MEMORY_MODULE  *Modules,
+  IN  UINTN                      Max,
+  OUT UINTN                      *Count
+  )
+{
+  EFI_STATUS                 Status;
+  EFI_SMBIOS_PROTOCOL        *Smbios;
+  EFI_SMBIOS_HANDLE          Handle;
+  EFI_SMBIOS_TABLE_HEADER    *Record;
+  SMBIOS_TABLE_TYPE17        *Type17;
+  NUC_REDFISH_MEMORY_MODULE  *Module;
+  UINT32                     Capacity;
+
+  if ((Modules == NULL) || (Count == NULL) || (Max == 0)) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  *Count = 0;
+  ZeroMem (Modules, Max * sizeof (*Modules));
+
+  Status = gBS->LocateProtocol (&gEfiSmbiosProtocolGuid, NULL, (VOID **)&Smbios);
+  if (EFI_ERROR (Status)) {
+    return EFI_NOT_FOUND;
+  }
+
+  Handle = SMBIOS_HANDLE_PI_RESERVED;
+  while (!EFI_ERROR (Smbios->GetNext (Smbios, &Handle, NULL, &Record, NULL))) {
+    if (Record->Type != EFI_SMBIOS_TYPE_MEMORY_DEVICE) {
+      continue;
+    }
+
+    if (*Count >= Max) {
+      DEBUG ((DEBUG_ERROR, "NucRedfishSync: more than %d memory devices, truncating\n", Max));
+      break;
+    }
+
+    Type17 = (SMBIOS_TABLE_TYPE17 *)Record;
+
+    //
+    // SMBIOS emits a record per socket whether or not it is populated.
+    // Reporting an empty one would claim hardware that is not there.
+    //
+    Capacity = RedfishMemoryCapacityMiB (Type17);
+    if (Capacity == 0) {
+      continue;
+    }
+
+    Module              = &Modules[*Count];
+    Module->CapacityMiB = Capacity;
+
+    CopyInventoryString (
+      Module->DeviceLocator,
+      sizeof (Module->DeviceLocator),
+      SmbiosGetString (Record, Type17->DeviceLocator)
+      );
+    CopyInventoryString (
+      Module->BankLocator,
+      sizeof (Module->BankLocator),
+      SmbiosGetString (Record, Type17->BankLocator)
+      );
+    CopyInventoryString (
+      Module->Manufacturer,
+      sizeof (Module->Manufacturer),
+      SmbiosGetString (Record, Type17->Manufacturer)
+      );
+    CopyInventoryString (
+      Module->SerialNumber,
+      sizeof (Module->SerialNumber),
+      SmbiosGetString (Record, Type17->SerialNumber)
+      );
+    CopyInventoryString (
+      Module->PartNumber,
+      sizeof (Module->PartNumber),
+      SmbiosGetString (Record, Type17->PartNumber)
+      );
+
+    Module->MemoryDeviceType = RedfishMemoryDeviceType (Type17->MemoryType);
+    Module->BaseModuleType   = RedfishBaseModuleType (Type17->FormFactor);
+    Module->DataWidthBits    = Type17->DataWidth;
+    Module->BusWidthBits     = Type17->TotalWidth;
+    Module->RatedSpeedMhz    = Type17->Speed;
+
+    //
+    // The configured speed is what the module is actually running at, and is
+    // what Redfish calls OperatingSpeedMhz. It arrived in SMBIOS 2.7; fall back
+    // to the rated speed on an older record.
+    //
+    if (Type17->Hdr.Length >= OFFSET_OF (SMBIOS_TABLE_TYPE17, ConfiguredMemoryClockSpeed) +
+        sizeof (Type17->ConfiguredMemoryClockSpeed))
+    {
+      Module->OperatingSpeedMhz = Type17->ConfiguredMemoryClockSpeed;
+    }
+
+    if (Module->OperatingSpeedMhz == 0) {
+      Module->OperatingSpeedMhz = Type17->Speed;
+    }
+
+    DEBUG ((
+      DEBUG_ERROR,
+      "NucRedfishSync: memory[%d] '%a' %d MiB %a %d MHz mfr='%a' pn='%a'\n",
+      *Count,
+      Module->DeviceLocator,
+      Module->CapacityMiB,
+      Module->MemoryDeviceType != NULL ? Module->MemoryDeviceType : "(type?)",
+      Module->OperatingSpeedMhz,
+      Module->Manufacturer,
+      Module->PartNumber
+      ));
+
+    (*Count)++;
+  }
+
+  return EFI_SUCCESS;
+}
+
+/**
   Append a "Name": "Value" member when Value is non-empty.
 
   Values come from SMBIOS strings, which may legitimately contain a double quote
@@ -300,6 +502,102 @@ NucRedfishBuildSystemPatch (
   AppendJsonString (Body, NUC_REDFISH_JSON_MAX, "SerialNumber", Inventory->SerialNumber);
   if (Inventory->UuidValid) {
     AppendJsonString (Body, NUC_REDFISH_JSON_MAX, "UUID", Inventory->Uuid);
+  }
+
+  AsciiStrCatS (Body, NUC_REDFISH_JSON_MAX, "}");
+
+  *Json = Body;
+  return EFI_SUCCESS;
+}
+
+/**
+  Append a "Name": <number> member when Value is non-zero.
+
+  Zero is treated as "SMBIOS did not say" throughout type 17 -- an unknown speed
+  or width is encoded as 0 -- so omitting it is more honest than reporting a
+  DIMM that runs at 0 MHz.
+**/
+STATIC
+VOID
+AppendJsonNumber (
+  IN OUT CHAR8        *Json,
+  IN     UINTN        JsonSize,
+  IN     CONST CHAR8  *Name,
+  IN     UINT32       Value
+  )
+{
+  CHAR8  Buffer[32];
+
+  if (Value == 0) {
+    return;
+  }
+
+  AsciiSPrint (Buffer, sizeof (Buffer), ",\"%a\":%d", Name, Value);
+  AsciiStrCatS (Json, JsonSize, Buffer);
+}
+
+EFI_STATUS
+NucRedfishBuildMemoryPost (
+  IN  NUC_REDFISH_MEMORY_MODULE  *Module,
+  OUT CHAR8                      **Json
+  )
+{
+  CHAR8  *Body;
+
+  if ((Module == NULL) || (Json == NULL)) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  Body = AllocateZeroPool (NUC_REDFISH_JSON_MAX);
+  if (Body == NULL) {
+    return EFI_OUT_OF_RESOURCES;
+  }
+
+  //
+  // @odata.type leads so the object is never empty and the BMC can tell which
+  // schema version this is; everything after it is conditional and emitted with
+  // a leading comma.
+  //
+  // DeviceLocator doubles as the member's identity: the BMC uses it as the
+  // resource Id, so re-reporting the same socket on a later boot updates that
+  // member rather than creating a second one.
+  //
+  AsciiSPrint (
+    Body,
+    NUC_REDFISH_JSON_MAX,
+    "{\"@odata.type\":\"#Memory.v1_7_1.Memory\""
+    ",\"Status\":{\"State\":\"Enabled\",\"Health\":\"OK\"}"
+    ",\"MemoryType\":\"DRAM\""
+    );
+
+  AppendJsonString (Body, NUC_REDFISH_JSON_MAX, "DeviceLocator", Module->DeviceLocator);
+  AppendJsonString (Body, NUC_REDFISH_JSON_MAX, "Name", Module->DeviceLocator);
+  AppendJsonString (Body, NUC_REDFISH_JSON_MAX, "Manufacturer", Module->Manufacturer);
+  AppendJsonString (Body, NUC_REDFISH_JSON_MAX, "SerialNumber", Module->SerialNumber);
+  AppendJsonString (Body, NUC_REDFISH_JSON_MAX, "PartNumber", Module->PartNumber);
+
+  if (Module->MemoryDeviceType != NULL) {
+    AppendJsonString (Body, NUC_REDFISH_JSON_MAX, "MemoryDeviceType", Module->MemoryDeviceType);
+  }
+
+  if (Module->BaseModuleType != NULL) {
+    AppendJsonString (Body, NUC_REDFISH_JSON_MAX, "BaseModuleType", Module->BaseModuleType);
+  }
+
+  AppendJsonNumber (Body, NUC_REDFISH_JSON_MAX, "CapacityMiB", Module->CapacityMiB);
+  AppendJsonNumber (Body, NUC_REDFISH_JSON_MAX, "OperatingSpeedMhz", Module->OperatingSpeedMhz);
+  AppendJsonNumber (Body, NUC_REDFISH_JSON_MAX, "DataWidthBits", Module->DataWidthBits);
+  AppendJsonNumber (Body, NUC_REDFISH_JSON_MAX, "BusWidthBits", Module->BusWidthBits);
+
+  //
+  // AllowedSpeedsMHz is an array of what the module itself supports, as opposed
+  // to OperatingSpeedMhz which is what it was configured to.
+  //
+  if (Module->RatedSpeedMhz != 0) {
+    CHAR8  Speeds[48];
+
+    AsciiSPrint (Speeds, sizeof (Speeds), ",\"AllowedSpeedsMHz\":[%d]", Module->RatedSpeedMhz);
+    AsciiStrCatS (Body, NUC_REDFISH_JSON_MAX, Speeds);
   }
 
   AsciiStrCatS (Body, NUC_REDFISH_JSON_MAX, "}");

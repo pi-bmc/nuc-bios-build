@@ -54,7 +54,7 @@ SRC_URI = "gitsm://github.com/tianocore/edk2.git;protocol=https;branch=master;na
 # point) and features this board is configured to use (CFR SetupMenu,
 # PRIORITIZE_INTERNAL, the BGRT logo position).
 #
-# 0019-0024: local. All six are applied unconditionally; what they add is
+# 0019-0025: local. All seven are applied unconditionally; what they add is
 # gated by DSC defines that default FALSE, so the -D flags below decide what is
 # actually built. Making the *patches* conditional instead would be fragile --
 # 0021, 0022 and 0023 edit regions 0020 creates or sits beside.
@@ -83,12 +83,13 @@ SRC_URI += "${@' '.join('file://' + p for p in [ \
     '0022-UefiPayloadPkg-wire-in-edk2-redfish-client-RedfishCl.patch', \
     '0023-UefiPayloadPkg-give-NetworkPkg-the-protocol-producer.patch', \
     '0024-UefiPayloadPkg-retry-Redfish-HTTP-requests-at-least-.patch', \
+    '0025-UefiPayloadPkg-CfrSetupMenuDxe-publish-CFR-options-a.patch', \
     ])}"
 
 # The one patch that applies to edk2-redfish-client rather than edk2. Numbered
 # out of the way (0100) so the two series never look like one, and pointed at
 # its own tree with patchdir -- do_patch defaults to ${S}, which is edk2.
-SRC_URI += "file://0100-RedfishClientPkg-accept-the-single-ComputerSystem-on.patch;patchdir=${EDK2_REDFISH_CLIENT_PATH}"
+SRC_URI += "file://0100-RedfishClientPkg-fit-the-client-to-a-Redfish-host-in.patch;patchdir=${EDK2_REDFISH_CLIENT_PATH}"
 
 # All three pinned, not AUTOREV: a floating revision makes the build
 # non-reproducible and silently changes what lands in the ROM. The patch series

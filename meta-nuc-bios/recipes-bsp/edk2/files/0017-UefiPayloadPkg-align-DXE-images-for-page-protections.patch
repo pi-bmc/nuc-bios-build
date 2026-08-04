@@ -1,7 +1,7 @@
 From a19edc1ee42b7ff78bb143221f78a9d1cf1a6c93 Mon Sep 17 00:00:00 2001
 From: Sean Rhodes <sean@starlabs.systems>
 Date: Wed, 11 Mar 2026 10:27:59 +0000
-Subject: [PATCH 17/24] UefiPayloadPkg: align DXE images for page protections
+Subject: [PATCH 17/25] UefiPayloadPkg: align DXE images for page protections
 
 Apply -z common-page-size=0x1000 to IA32/X64 DXE core, DXE
 drivers, UEFI drivers and UEFI applications in UefiPayloadPkg.

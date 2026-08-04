@@ -1,7 +1,7 @@
 From ef6719efc97a60a9b46c834a71e4ee07284daa7c Mon Sep 17 00:00:00 2001
 From: Matt DeVillier <matt.devillier@gmail.com>
 Date: Thu, 2 Jan 2025 15:41:57 -0600
-Subject: [PATCH 10/24] UefiPayloadPkg: Set PcdCpuFeaturesInitOnS3Resume to
+Subject: [PATCH 10/25] UefiPayloadPkg: Set PcdCpuFeaturesInitOnS3Resume to
  FALSE for coreboot
 
 Programming CPU features on S3 resume causes issues with Qubes and others

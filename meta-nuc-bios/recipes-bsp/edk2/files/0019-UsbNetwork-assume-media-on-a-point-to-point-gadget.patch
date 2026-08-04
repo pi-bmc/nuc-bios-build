@@ -1,7 +1,7 @@
 From f4537dcedfbeb7e8530a66f6181cc1bbc94c645b Mon Sep 17 00:00:00 2001
 From: appkins <nbatkins@gmail.com>
 Date: Tue, 4 Aug 2026 13:04:05 -0500
-Subject: [PATCH 19/24] UsbNetwork: assume media on a point-to-point gadget
+Subject: [PATCH 19/25] UsbNetwork: assume media on a point-to-point gadget
 
 edk2's USB-net stack starts CableDetect = 0 and only raises it on catching a
 CDC NETWORK_CONNECTION / NETWORK_CONNECTED notification. Linux's f_ecm emits

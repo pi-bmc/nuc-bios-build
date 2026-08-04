@@ -1,7 +1,7 @@
 From 5085765a03ee4acd6c3ee8120d3b0e7742cc702e Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
 Date: Thu, 9 Oct 2025 11:33:27 +0200
-Subject: [PATCH 15/24] UefiPayloadPkg/Library/CbParseLib: Populate root
+Subject: [PATCH 15/25] UefiPayloadPkg/Library/CbParseLib: Populate root
  bridges info from HOB
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

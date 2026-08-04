@@ -1,7 +1,7 @@
 From 0289e3b5d8771c51fad05a376f356b75f01304c5 Mon Sep 17 00:00:00 2001
 From: appkins <nbatkins@gmail.com>
 Date: Tue, 4 Aug 2026 14:28:40 -0500
-Subject: [PATCH 24/24] UefiPayloadPkg: retry Redfish HTTP requests at least
+Subject: [PATCH 24/25] UefiPayloadPkg: retry Redfish HTTP requests at least
  once
 
 RedfishPkg's per-method retry PCDs all default to 0, which makes RedfishHttpDxe

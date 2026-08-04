@@ -1,7 +1,7 @@
 From c180dfac50d7357b3c4594b0587edd9fda0691a1 Mon Sep 17 00:00:00 2001
 From: Matt DeVillier <matt.devillier@gmail.com>
 Date: Tue, 24 Nov 2020 13:57:46 -0600
-Subject: [PATCH 04/24] MdeModulePkg/UefiBootManagerLib: Add Pcd to prioritize
+Subject: [PATCH 04/25] MdeModulePkg/UefiBootManagerLib: Add Pcd to prioritize
  internal devices
 
 Add Pcd to allow configuring internal devices to be prioritized over

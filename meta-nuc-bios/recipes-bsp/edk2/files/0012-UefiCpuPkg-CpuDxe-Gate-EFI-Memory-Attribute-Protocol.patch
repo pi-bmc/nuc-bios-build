@@ -1,7 +1,7 @@
 From 144b9ff46432e8b533f44b5ef876f3bdd3306cad Mon Sep 17 00:00:00 2001
 From: Matt DeVillier <matt.devillier@gmail.com>
 Date: Tue, 11 Feb 2025 13:16:06 -0600
-Subject: [PATCH 12/24] UefiCpuPkg/CpuDxe: Gate EFI Memory Attribute Protocol
+Subject: [PATCH 12/25] UefiCpuPkg/CpuDxe: Gate EFI Memory Attribute Protocol
  behind a PCD
 
 DxeCore CoreFreePages() consults gEfiMemoryAttributeProtocolGuid and

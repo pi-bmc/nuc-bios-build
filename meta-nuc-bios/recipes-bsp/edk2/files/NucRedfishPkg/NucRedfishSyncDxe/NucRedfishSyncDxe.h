@@ -35,6 +35,7 @@
 //
 #define NUC_REDFISH_SERVICE_ROOT_URI  L"/redfish/v1/"
 #define NUC_REDFISH_SYSTEM_URI        L"/redfish/v1/Systems/1"
+#define NUC_REDFISH_MEMORY_URI        L"/redfish/v1/Systems/1/Memory"
 
 //
 // Boot progress state reported at the point the config handler runs: DXE is
@@ -106,6 +107,86 @@ EFI_STATUS
 NucRedfishBuildSystemPatch (
   IN  NUC_REDFISH_HOST_INVENTORY  *Inventory,
   OUT CHAR8                       **Json
+  );
+
+//
+// DIMM slots reported. This board has two; the bound is generous so a table
+// with more entries is truncated rather than overrunning.
+//
+#define NUC_REDFISH_MEMORY_MAX  8
+
+//
+// One populated memory device, as SMBIOS type 17 describes it, reduced to the
+// Redfish Memory v1_7_1 properties the BMC stores.
+//
+// This exists because edk2-redfish-client's MemoryDxe cannot supply it. That
+// driver has no SMBIOS dependency at all -- its only source is
+// EDKII_REDFISH_PLATFORM_CONFIG_PROTOCOL, i.e. HII questions in the
+// "x-UEFI-redfish-Memory.v1_7_1" namespace -- so on any platform that does not
+// publish DIMM inventory as BIOS *setup questions* (which is every platform,
+// because Memory is inventory and not configuration) it walks all 38 schema
+// properties, misses every one, and POSTs an empty resource:
+//
+//     RedfishPlatformConfigGetStatementCommon: No match HII statement is found
+//       by the given /Memory/{1}/CapacityMiB in schema x-UEFI-redfish-Memory.v1_7_1
+//     ... x37 more ...
+//     RedfishPostResource: Post URI: /redfish/v1/Systems/1/Memory
+//
+// The data itself is present and correct -- coreboot's raminit publishes full
+// type 17 records, and the OS reads them -- so report them the same way this
+// driver already reports type 0 and type 1.
+//
+typedef struct {
+  CHAR8          DeviceLocator[NUC_REDFISH_STR_MAX];
+  CHAR8          BankLocator[NUC_REDFISH_STR_MAX];
+  CHAR8          Manufacturer[NUC_REDFISH_STR_MAX];
+  CHAR8          SerialNumber[NUC_REDFISH_STR_MAX];
+  CHAR8          PartNumber[NUC_REDFISH_STR_MAX];
+  CONST CHAR8    *MemoryDeviceType;               // "DDR3", "DDR4", ... or NULL
+  CONST CHAR8    *BaseModuleType;                 // "SO_DIMM", "UDIMM", ... or NULL
+  UINT32         CapacityMiB;
+  UINT32         OperatingSpeedMhz;               // configured speed
+  UINT32         RatedSpeedMhz;                   // the module's own rating
+  UINT16         DataWidthBits;
+  UINT16         BusWidthBits;
+} NUC_REDFISH_MEMORY_MODULE;
+
+/**
+  Collect populated memory devices from the SMBIOS type 17 records this
+  firmware published.
+
+  Unpopulated slots (Size == 0) and slots of unknown size are skipped: SMBIOS
+  emits a record per socket whether or not it is filled, and reporting an empty
+  socket as a Memory resource would claim hardware that is not there.
+
+  @param[out] Modules  Receives the populated modules.
+  @param[in]  Max      Capacity of Modules.
+  @param[out] Count    Receives the number written.
+
+  @retval EFI_SUCCESS    Zero or more modules were collected.
+  @retval EFI_NOT_FOUND  The SMBIOS protocol is not available.
+**/
+EFI_STATUS
+NucRedfishCollectMemory (
+  OUT NUC_REDFISH_MEMORY_MODULE  *Modules,
+  IN  UINTN                      Max,
+  OUT UINTN                      *Count
+  );
+
+/**
+  Build the Memory POST body for one module.
+
+  @param[in]  Module  Module to describe.
+  @param[out] Json    Receives an allocated ASCII JSON body. Caller frees with
+                      FreePool().
+
+  @retval EFI_SUCCESS           Body was built.
+  @retval EFI_OUT_OF_RESOURCES  Allocation failed.
+**/
+EFI_STATUS
+NucRedfishBuildMemoryPost (
+  IN  NUC_REDFISH_MEMORY_MODULE  *Module,
+  OUT CHAR8                      **Json
   );
 
 #endif // NUC_REDFISH_SYNC_DXE_H_

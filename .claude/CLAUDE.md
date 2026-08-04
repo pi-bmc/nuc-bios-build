@@ -157,8 +157,8 @@ not build against this tree). `NucRedfishSyncDxe` is that consumer.
    those only on link-state changes, and the enumeration-time one fires long
    before the UEFI driver binds, so it is effectively never set. That model
    suits a dongle with an RJ45; it does not suit a point-to-point gadget, where
-   enumeration *is* the proof of link. `wire-redfish.py` patches the initialiser
-   to 1 (a real `NETWORK_DISCONNECT` still clears it).
+   enumeration *is* the proof of link. Patch `0002-UsbNetwork-assume-media-on-a-
+   point-to-point-gadget.patch` defaults the initialiser to 1.
 
    An earlier fix had the BMC re-emit the notification by bouncing usb0 on a
    timer. Do not reintroduce it: overlapping announcers ended up flapping the
@@ -242,7 +242,7 @@ A warm reboot also used to lose the Redfish exchange even when it booted: the
 host reset makes `f_ecm` queue a `NETWORK_DISCONNECT`, and the freshly bound
 UEFI driver reads it and treats the cable as unplugged for the rest of the boot
 (the matching `CONNECTED` having been emitted while nothing was listening).
-`wire-redfish.py` therefore makes `CableDetect` sticky as well as defaulting it
+Patch `0002` therefore makes `CableDetect` sticky as well as defaulting it
 to 1 -- see trap 4 above.
 
 ### Verifying it
@@ -284,77 +284,86 @@ never rebinds while the host is powered off, nor within
 `hostEnumerationGrace` (90 s) of power-on; it binds once on the power-on
 transition (`ensureHostInterfaceReady`) and then leaves the gadget alone.
 
-## iPXE must not see the BMC's management NIC
+## Network boot: the LOM needs a UEFI driver of its own
 
-iPXE builds its **own** xHCI/EHCI/UHCI drivers (`config/usb.h`), so on EFI it
-takes the USB controllers over and enumerates the bus itself rather than going
-through the firmware. `drivers/net/ecm.c` then binds the JetKVM's CDC-ECM gadget
-directly, and it lands ahead of the LOM in the PCI scan — so `net0` was the
-Redfish host interface and iPXE tried to netboot over the management link.
+Nothing in stock UefiPayloadPkg publishes `EFI_SIMPLE_NETWORK_PROTOCOL` for the
+onboard I218-V. It carries prebuilt Realtek and ASIX UNDI blobs and no Intel
+one, and `SnpDxe` only layers SNP over an *existing* UNDI/NII instance. So the
+BMC's CDC-ECM gadget was the only network interface the firmware exposed.
+Measured on hardware 2026-08-04, before the fix:
 
-`ipxe-efi_git.bb` empties two make variables to prevent it:
+```text
+NucRedfishSync: 2 SNP handle(s) in the system
+NucRedfishSync:   SNP[0] DA:A7:62:23:3E:F5
+NucRedfishSync:   SNP[1] DA:A7:62:23:3E:F5
+```
 
-- `DRIVERS_usb_net=""` — the one that matters; drops `ecm`/`ncm` et al.
-- `DRIVERS_efi_net=""` — closes the second route, `snpnet`/`nii` binding the
-  UEFI SNP handle the payload publishes for that same gadget.
+Both the gadget; the LOM (`B8:AE:ED:7E:3F:6E`) absent.
 
-Both are asserted after the link, against `bin-x86_64-efi-sb/ipxe.efi.tmp.map`,
-because both rely on make's command-line precedence: an upstream rename would
-not fail the build, it would silently put the BMC link back at `net0`.
+That is what broke netboot. A chainloaded iPXE **`snp.efi`** — which is what
+Tinkerbell boots — contains no native drivers at all: it binds SNP handles and
+nothing else. With only the management link publishing one, it retried DHCP over
+the RHI until it hit its retry limit, with no second interface to fall through
+to.
 
-Do **not** reason about this from `usbio.o` being absent from the link. That is
-only the USBIO pseudo-HCD (`USB_HCD_USBIO`, commented out upstream as "Very
-slow"); its absence says nothing about the real host controller drivers. That
-inference cost a build-and-flash cycle here.
+**The fix is `ipxe-intel.efidrv`**: iPXE built as a UEFI *driver* rather than an
+application (`bin-x86_64-efi/intel.efidrv`, via `interface/efi/efi_snp.c`),
+embedded in the DXE FV next to the Realtek and ASIX blobs. It binds the LOM and
+publishes SNP for it. After the fix:
 
-### Two fixes that look obvious and do not work
+```text
+NucRedfishSync: 4 SNP handle(s) in the system
+NucRedfishSync:   SNP[0] B8:AE:ED:7E:3F:6E     <- LOM, first
+NucRedfishSync:   SNP[1] B8:AE:ED:7E:3F:6E
+NucRedfishSync:   SNP[2] DA:A7:62:23:3E:F5
+NucRedfishSync:   SNP[3] DA:A7:62:23:3E:F5
+```
 
-Both were tried on hardware 2026-08-02. Don't spend the cycles again.
+The LOM enumerates *ahead* of the RHI, so `snp.efi` takes it as `net0`.
+Verified end to end 2026-08-04: CaptainOS netbooted via the iPXE chainload.
 
-**Disconnecting the NIC in firmware does not hide it from iPXE.**
-`NucRedfishSyncDxe` does call `DisconnectController()` on the host-interface NIC
-when the exchange finishes, and it succeeds — but iPXE re-enumerates the USB bus
-with its own drivers and binds the gadget regardless:
+Two build details, both non-obvious:
+
+- The driver comes from the plain `bin-x86_64-efi` tree, not `-sb`. iPXE's
+  secboot assertion covers the application prefix but not the driver prefix, so
+  the `-sb` target refuses to link (`interface/efi/efidrvprefix.c` is missing a
+  `FILE_SECBOOT()` declaration). That is iPXE bookkeeping, not a signing
+  requirement, and FV contents are not subject to UEFI Secure Boot verification
+  anyway. The application still builds `-sb`, matching coreboot.
+- The target name *is* the driver set: `intel` resolves to the intel driver
+  alone, so the driver carries no USB or SNP shims and cannot bind the gadget.
+
+### Approaches that do not work — do not retry these
+
+All tried on hardware 2026-08-02/04.
+
+**Reordering the interfaces is impossible.** `device pci 14.0` (xHCI) and
+`19.0` (GbE) in `devicetree.cb` *describe* fixed Wildcat Point-LP PCH functions.
+coreboot enables or disables them; it cannot renumber silicon, so any ascending
+PCI scan reaches xHCI — and therefore the gadget — before the LOM. ACPI
+(`lan.asl`) describes the device to the OS and has no bearing on UEFI driver
+binding or SNP creation either.
+
+**Disconnecting the NIC in firmware does not hide it from a full iPXE.**
+`gBS->DisconnectController()` on the host-interface NIC succeeds and tears down
+its SNP/IP4/REST EX — which *does* hide it from `snp.efi` — but a full
+`ipxe.efi` re-enumerates the USB bus with its own xHCI driver and binds the
+gadget regardless:
 
 ```text
 NucRedfishSync: disconnected host-interface NIC DA:A7:62:23:3E:F5 - Success
 ... net0mac=da:a7:62:23:3e:f5 net0chip=cdc-ecm     <- iPXE, with snpnet AND ecm linked
 ```
 
-That test settles the question of whether iPXE consumes UEFI's network stack for
-this device: it does not. The disconnect stays in as hygiene only.
+**Detaching the gadget from the BMC was abandoned.** Removing the ECM function
+needs a gadget rebind that races BDS launching the boot option, and it left a
+warm-rebooted host with no host interface at all — the re-attach only fires on a
+DC power-on transition, which `systemctl reboot` never produces.
 
-**The PCI addresses cannot be reordered.** `device pci 14.0` (xHCI) and
-`19.0` (GbE) in `devicetree.cb` *describe* fixed Wildcat Point-LP PCH functions.
-coreboot enables or disables them; it cannot renumber silicon, so any ascending
-PCI scan reaches xHCI — and therefore the gadget — before the LOM.
-
-**What is left.** For the payload's own iPXE, the driver-set fix above is
-complete and verified. For a chainloaded binary, `dhcp` fails on net0 and falls
-through to net1, which works — at the cost of one DHCP timeout. Removing the
-gadget from the bus mid-boot (BMC-side detach) was tried and abandoned: it needs
-a gadget rebind that races BDS launching the boot option, and it left a
-warm-rebooted host with no host interface at all. Prefer fixing the boot script
-(`dhcp net1`, or select on `${netN/chip}`) over firmware or gadget games.
-
-### Reading iPXE's device list without a console
-
-There is no UART and the KVM cannot capture the firmware phase, so build a
-throwaway image with an embedded script that reports over HTTP:
-
-```sh
-# probe.ipxe
-#!ipxe
-dhcp
-chain --autofree http://<workstation>:8099/report?net0mac=${net0/mac}&net0chip=${net0/chip}&net1mac=${net1/mac}&ip=${ip}
-exit
-```
-
-Pass `EMBED=/path/to/probe.ipxe` to the `oe_runmake` in `do_compile`, then serve
-`python3 -m http.server 8099` and read the access log. The NUC's LAN routes to
-the workstation subnet, and the 404 is irrelevant — the query string is the
-result. This is what proved the fix (`net0chip=i218v-3`, DHCP lease obtained)
-and what disproved the first, wrong diagnosis. Remove `EMBED` before shipping.
+**Restricting the payload iPXE's driver set was a dead end too.** Emptying
+`DRIVERS_usb_net`/`DRIVERS_efi_net` did make the LOM `net0` for the binary we
+build, but it does nothing for a chainloaded one — which is the case that
+matters. Removed once the driver landed.
 
 ## Bootsplash
 

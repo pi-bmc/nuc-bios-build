@@ -65,6 +65,10 @@ SRC_URI += "${@' '.join([ \
     'file://0002-UsbNetwork-assume-media-on-a-point-to-point-gadget.patch', \
     ]) if d.getVar('EDK2_REDFISH') == '1' else ''}"
 
+# The LOM's UNDI/SNP driver. Tied to EDK2_IPXE because that is what builds and
+# stages the binary the FDF entry points at.
+SRC_URI += "${@'file://0003-UefiPayloadPkg-give-the-onboard-NIC-a-UNDI-SNP-driver.patch' if d.getVar('EDK2_IPXE') == '1' else ''}"
+
 # Branch head as of 2026-07-13. coreboot master defaults to this branch
 # (payloads/external/edk2/Kconfig: EDK2_TAG_OR_REV "origin/uefipayload_2605").
 SRCREV_edk2 = "2939f4969466bfe71722494e4cea5cbaa029c709"
@@ -264,6 +268,16 @@ do_configure() {
         install -d ${S}/UefiPayloadPkg/NetworkDrivers
         install -m 0644 ${DEPLOY_DIR_IMAGE}/ipxe.rom \
             ${S}/UefiPayloadPkg/NetworkDrivers/ipxe.efi
+
+        # The UNDI/SNP driver for the onboard NIC, dispatched from the DXE FV
+        # (see the FDF patch). Without it nothing in this payload publishes
+        # EFI_SIMPLE_NETWORK_PROTOCOL for the LOM -- UefiPayloadPkg carries
+        # prebuilt Realtek and ASIX UNDI blobs and no Intel one, and SnpDxe only
+        # layers SNP over an existing UNDI/NII instance. A chainloaded iPXE
+        # snp.efi binds SNP handles and nothing else, so with only the BMC's
+        # gadget publishing one it had no LOM to boot from at all.
+        install -m 0644 ${DEPLOY_DIR_IMAGE}/ipxe-intel.efidrv \
+            ${S}/UefiPayloadPkg/NetworkDrivers/ipxe-intel.efidrv
     fi
 
     # Redfish wiring itself is applied by do_patch -- see the SRC_URI patches.

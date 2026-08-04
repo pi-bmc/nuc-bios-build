@@ -1,0 +1,53 @@
+From: nuc-bios-build <nbatkins@gmail.com>
+Subject: [PATCH] UefiPayloadPkg: give the onboard NIC a UNDI/SNP driver
+
+Nothing in this payload publishes EFI_SIMPLE_NETWORK_PROTOCOL for the onboard
+I218-V. UefiPayloadPkg carries prebuilt Realtek and ASIX UNDI blobs and no Intel
+one, and SnpDxe only layers SNP over an existing UNDI/NII instance -- so the
+BMC's CDC-ECM gadget ends up being the only network interface the firmware
+exposes. Measured on hardware 2026-08-04:
+
+    NucRedfishSync: 2 SNP handle(s) in the system
+    NucRedfishSync:   SNP[0] DA:A7:62:23:3E:F5
+    NucRedfishSync:   SNP[1] DA:A7:62:23:3E:F5
+
+Both are the gadget; the LOM (B8:AE:ED:7E:3F:6E) is absent.
+
+That is what breaks a chainloaded iPXE snp.efi, which is what Tinkerbell boots.
+snp.efi contains no native drivers -- it binds SNP handles and nothing else --
+so it saw the management link as its only interface, retried DHCP on it, and
+gave up at the retry limit. No amount of interface ordering helps when there is
+only one interface, and the ordering itself is not adjustable anyway: the ECM
+hangs off the xHCI controller at 00:14.0, which precedes the LOM at 00:19.0 in
+PCI order, and both are fixed Wildcat Point-LP function numbers that
+devicetree.cb describes rather than assigns.
+
+So publish an SNP for the LOM. The driver is iPXE built as a UEFI driver
+(bin-x86_64-efi-sb/intel.efidrv, via interface/efi/efi_snp.c) rather than an
+application, dispatched from the DXE FV alongside the Realtek and ASIX blobs it
+sits next to. Its driver set is the intel driver alone, so it carries no USB or
+SNP shims and cannot bind the gadget itself.
+
+Gated on NETWORK_IPXE because that is what stages the binary.
+
+Upstream-Status: Inappropriate [platform specific]
+Signed-off-by: nuc-bios-build <nbatkins@gmail.com>
+---
+--- a/UefiPayloadPkg/UefiPayloadPkg.fdf
++++ b/UefiPayloadPkg/UefiPayloadPkg.fdf
+@@ -504,6 +504,15 @@
+ !if $(ARCH) == IA32
+   # FIXME
+ !else
++# NucRedfish: UNDI/SNP for the onboard LOM. Nothing else in this payload
++# publishes EFI_SIMPLE_NETWORK_PROTOCOL for it, so a boot client that binds
++# SNP handles only -- iPXE's snp.efi, which Tinkerbell chainloads -- saw just
++# the BMC's host interface and had nothing to netboot from.
++!if $(NETWORK_IPXE) == TRUE
++  FILE DRIVER = F773F4F9-5C3E-475F-AE02-151D514D7379 {
++    SECTION PE32 = UefiPayloadPkg/NetworkDrivers/ipxe-intel.efidrv
++  }
++!endif
+ !if $(NETWORK_RTEK_PCI)
+   FILE DRIVER = D30D5496-6DF9-462D-9B97-0B93F659D1A0 {
+     SECTION PE32 = UefiPayloadPkg/NetworkDrivers/RtkUndiDxe.efi

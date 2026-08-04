@@ -72,7 +72,7 @@ do_compile() {
     # DRIVERS_efi_net change silently produced the previous build's ipxe.efi,
     # timestamps and all. It also explains how this recipe went so long without
     # ever building from a clean tree (see the ASFLAGS note below).
-    rm -rf ${S}/src/bin-x86_64-efi-sb
+    rm -rf ${S}/src/bin-x86_64-efi-sb ${S}/src/bin-x86_64-efi
 
     # The same target coreboot's payloads/external/iPXE builds when
     # CONFIG_IPXE_BUILD_EFI is set.
@@ -110,81 +110,80 @@ do_compile() {
     # coreboot does not hit this because it builds iPXE with its own crossgcc
     # toolchain, which carries an older binutils.
     #
-    # The two DRIVERS_* overrides stop iPXE offering the BMC's Redfish host
-    # interface as a boot device. Without them it becomes net0 and iPXE netboots
-    # over the management link instead of the LOM.
+    # Two artifacts out of one tree:
     #
-    # DRIVERS_usb_net is the one that actually matters. iPXE builds its own
-    # xHCI/EHCI/UHCI host controller drivers (config/usb.h), so on EFI it takes
-    # the USB controllers over and enumerates the bus itself rather than going
-    # through the firmware -- and drivers/net/ecm.c then binds the JetKVM's
-    # CDC-ECM gadget directly. Measured on hardware with a temporary EMBED
-    # script reporting over HTTP:
+    #   ipxe.efi        the boot *application* PlatformBootManagerLib registers
+    #                   as a boot option, driving the LOM with its own PCI
+    #                   driver.
+    #   intel.efidrv    a UEFI *driver* that binds the LOM and publishes
+    #                   EFI_SIMPLE_NETWORK_PROTOCOL for it (iPXE's
+    #                   interface/efi/efi_snp.c), dispatched from the DXE FV.
     #
-    #   net0mac=da:a7:62:23:3e:f5 net0chip=cdc-ecm   <- BMC host interface
-    #   net1mac=b8:ae:ed:7e:3f:6e                    <- onboard I218-V
+    # The driver exists because without it nothing in this payload gives the
+    # onboard NIC an SNP at all. Measured on hardware 2026-08-04:
     #
-    # Note this is *not* iPXE consuming the SNP handle that the payload's
-    # UsbNetwork + SnpDxe publish for the same gadget; usbio.o is absent from
-    # the link, but that is only the USBIO pseudo-HCD (config/usb.h leaves
-    # USB_HCD_USBIO commented out as "Very slow"), and its absence says nothing
-    # about the real host controller drivers. Removing the EFI net shims alone
-    # left net0 exactly as above.
+    #   NucRedfishSync: 2 SNP handle(s) in the system
+    #   NucRedfishSync:   SNP[0] DA:A7:62:23:3E:F5
+    #   NucRedfishSync:   SNP[1] DA:A7:62:23:3E:F5
     #
-    # DRIVERS_efi_net is emptied as well, which closes that second route: with
-    # it, iPXE's snpnet/nii bind any UEFI-provided network handle, and the only
-    # one on this board is that same ECM. Neither belongs in a boot path --
-    # DSP0270 host interfaces are management links.
+    # -- both the BMC's CDC-ECM gadget, none the LOM (B8:AE:ED:7E:3F:6E).
+    # UefiPayloadPkg ships prebuilt Realtek and ASIX UNDI blobs and no Intel
+    # one, and SnpDxe only layers SNP over an existing UNDI/NII instance.
     #
-    # What is left is the LOM, driven natively: drivers/net/intel.c carries
-    # PCI_ROM(0x8086, 0x15a3, "i218v-3", ...), matching the 8086:15a3 confirmed
-    # on this hardware, and the probe above proved it works -- iPXE's dhcp fell
-    # through to net1 and leased 10.1.40.22 over it.
+    # That is what breaks a chainloaded iPXE snp.efi, which Tinkerbell uses:
+    # snp.efi has no native drivers and binds SNP handles only, so it saw the
+    # management link as its one and only interface and retried DHCP on it until
+    # it gave up. This is not fixable by ordering -- there was no second
+    # interface to order against.
     #
-    # Command-line assignments again, and for the same reason as ASFLAGS: they
-    # beat the `+=` that the generated .rom.defs performs.
+    # The target name is the driver set: TGT_DRIVERS for "intel" resolves to the
+    # intel driver alone (Makefile.housekeeping), so this carries no USB or SNP
+    # shims and cannot bind the gadget itself. The DRIVERS_* overrides below
+    # apply only to DRIVERS_ipxe and so do not touch it.
+    #
+    # The driver comes out of the plain bin-x86_64-efi tree, not the -sb one.
+    # iPXE's secboot assertion covers the application prefix but not the driver
+    # prefix, so the -sb target refuses to link:
+    #
+    #     The following files are missing a FILE_SECBOOT() declaration:
+    #             interface/efi/efidrvprefix.c
+    #
+    # That is iPXE's own bookkeeping rather than a signing requirement, and it
+    # does not apply here in any case: this driver is dispatched from the DXE FV,
+    # and FV contents are not subject to UEFI Secure Boot image verification.
+    # The application still builds -sb, matching coreboot.
     oe_runmake -C ${S}/src \
         bin-x86_64-efi-sb/ipxe.efi \
+        bin-x86_64-efi/intel.efidrv \
         CROSS_COMPILE="" \
         HOST_CC="${BUILD_CC}" \
         ASFLAGS="--64 --divide" \
-        DRIVERS_efi_net="" \
-        DRIVERS_usb_net="" \
         V=1
 
     [ -s "${S}/src/bin-x86_64-efi-sb/ipxe.efi" ] || \
         bbfatal "iPXE produced no bin-x86_64-efi-sb/ipxe.efi -- check the build log"
 
-    # Assert what the two overrides above are for. Both lean on make's
-    # command-line precedence over variables iPXE sets itself, so an upstream
-    # rename would not fail the build -- it would silently restore snpnet and
-    # put the BMC link back at net0, which only shows up as a mis-netbooting
-    # machine. Check the link map instead.
+    [ -s "${S}/src/bin-x86_64-efi/intel.efidrv" ] || \
+        bbfatal "iPXE produced no bin-x86_64-efi/intel.efidrv -- check the build log"
+
+    # The application must still drive the LOM natively -- it is the boot option
+    # PlatformBootManagerLib registers, and drivers/net/intel.c is what makes it
+    # work: PCI_ROM(0x8086, 0x15a3, "i218v-3", ...) matches the 8086:15a3 on this
+    # board. Checked against the link map because the driver set comes from
+    # target names and generated .rom.defs rules, neither of which fails loudly
+    # if upstream renames something.
     map="${S}/src/bin-x86_64-efi-sb/ipxe.efi.tmp.map"
     [ -r "$map" ] || bbfatal "iPXE link map missing at $map -- cannot verify the driver set"
 
-    # ecm.o/ncm.o bind the BMC gadget directly off iPXE's own USB stack;
-    # snpnet.o and friends bind it via the UEFI SNP the payload publishes for
-    # it. Either way the management link comes back as a boot device.
-    for obj in ecm.o ncm.o snpnet.o nii.o mnp.o snponly.o; do
-        if grep -qF "blib.a($obj)" "$map"; then
-            bbfatal "iPXE linked $obj: it can bind the BMC's Redfish host interface, \
-which would then appear as a boot device (measured: net0 = da:a7:62:23:3e:f5, \
-chip cdc-ecm). DRIVERS_usb_net/DRIVERS_efi_net no longer suppress it -- check \
-whether upstream renamed them."
-        fi
-    done
-
-    # mnpnet.o is deliberately not in that list, though it does get linked.
-    # It is a support module, not a driver: efi_autoexec.o references
-    # mnptemp_create for the "fetch autoexec.ipxe over the network" feature.
-    # That path is reached only via efi_locate_device() on
-    # efi_loaded_image->DeviceHandle -- it walks up *this image's own* device
-    # path rather than enumerating MNP handles -- and this image is loaded from
-    # a firmware volume, whose path has no MNP service binding. It also builds a
-    # temporary netdev and destroys it, so it is never a boot device either way.
     grep -qF "blib.a(intel.o)" "$map" || \
         bbfatal "iPXE did not link intel.o -- nothing would drive the onboard I218-V"
+
+    # Same check for the driver, whose whole purpose is that NIC.
+    drvmap="${S}/src/bin-x86_64-efi/intel.efidrv.tmp.map"
+    [ -r "$drvmap" ] || bbfatal "iPXE driver link map missing at $drvmap"
+
+    grep -qF "blib.a(intel.o)" "$drvmap" || \
+        bbfatal "intel.efidrv did not link intel.o -- it would publish no SNP for the LOM"
 }
 
 do_deploy() {
@@ -194,6 +193,10 @@ do_deploy() {
     # the edk2 Makefile consumes ipxe.rom. The contents here are a PE, and
     # edk2-uefipayload installs it as NetworkDrivers/ipxe.efi accordingly.
     install -m 0644 ${S}/src/bin-x86_64-efi-sb/ipxe.efi ${DEPLOYDIR}/ipxe.rom
+
+    # The UNDI/SNP driver for the LOM. Kept under its own name -- coreboot has
+    # no equivalent artifact, so there is no upstream convention to mirror.
+    install -m 0644 ${S}/src/bin-x86_64-efi/intel.efidrv ${DEPLOYDIR}/ipxe-intel.efidrv
 }
 
 addtask deploy after do_compile

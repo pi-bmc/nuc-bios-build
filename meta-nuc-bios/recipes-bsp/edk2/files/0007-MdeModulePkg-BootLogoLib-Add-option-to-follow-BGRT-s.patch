@@ -1,0 +1,53 @@
+From 2180e106d4b1dac592f78fa18c83a6d75d3c8439 Mon Sep 17 00:00:00 2001
+From: Sean Rhodes <sean@starlabs.systems>
+Date: Sun, 10 Jul 2022 19:23:59 +0100
+Subject: [PATCH 07/23] MdeModulePkg/BootLogoLib: Add option to follow BGRT
+ specification
+
+Add an option to position the logo 38.2% from the top of the screen,
+which follows the BGRT specification.
+
+Cc: Zhichao Gao <zhichao.gao@intel.com>
+Cc: Ray Ni <ray.ni@intel.com>
+Cc: Jian J Wang <jian.j.wang@intel.com>
+Cc: Liming Gao <gaoliming@byosoft.com.cn>
+Signed-off-by: Sean Rhodes <sean@starlabs.systems>
+(cherry picked from commit 78813397306ec3f20cae93039bac985e6ba6692f)
+---
+ MdeModulePkg/Include/Protocol/PlatformLogo.h   | 3 ++-
+ MdeModulePkg/Library/BootLogoLib/BootLogoLib.c | 5 +++++
+ 2 files changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/MdeModulePkg/Include/Protocol/PlatformLogo.h b/MdeModulePkg/Include/Protocol/PlatformLogo.h
+index ea3dcefe9b..bd7809b7a0 100644
+--- a/MdeModulePkg/Include/Protocol/PlatformLogo.h
++++ b/MdeModulePkg/Include/Protocol/PlatformLogo.h
+@@ -28,7 +28,8 @@ typedef enum {
+   EdkiiPlatformLogoDisplayAttributeCenterBottom,
+   EdkiiPlatformLogoDisplayAttributeLeftBottom,
+   EdkiiPlatformLogoDisplayAttributeCenterLeft,
+-  EdkiiPlatformLogoDisplayAttributeCenter
++  EdkiiPlatformLogoDisplayAttributeCenter,
++  EdkiiPlatformLogoDisplayAttributeBGRTSpecification
+ } EDKII_PLATFORM_LOGO_DISPLAY_ATTRIBUTE;
+ 
+ /**
+diff --git a/MdeModulePkg/Library/BootLogoLib/BootLogoLib.c b/MdeModulePkg/Library/BootLogoLib/BootLogoLib.c
+index 5beb0e0aa5..f00d3ad619 100644
+--- a/MdeModulePkg/Library/BootLogoLib/BootLogoLib.c
++++ b/MdeModulePkg/Library/BootLogoLib/BootLogoLib.c
+@@ -172,6 +172,11 @@ BootLogoEnableLogo (
+         DestY = SizeOfY - Image.Height;
+         break;
+ 
++      case EdkiiPlatformLogoDisplayAttributeBGRTSpecification:
++        DestX = (SizeOfX - Image.Width) / 2;
++        DestY = (SizeOfY * 382) / 1000 - Image.Height / 2;
++        break;
++
+       default:
+         ASSERT (FALSE);
+         continue;
+-- 
+2.55.0
+

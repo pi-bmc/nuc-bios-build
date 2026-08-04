@@ -1,0 +1,2466 @@
+From 39907bc79cfa3f4f0879c9b662a64bd9fbbf2ac2 Mon Sep 17 00:00:00 2001
+From: Benjamin Doron <benjamin.doron@9elements.com>
+Date: Thu, 20 Apr 2023 20:43:32 -0400
+Subject: [PATCH 11/23] UefiPayloadPkg: Implement CFR support
+
+Squash down of multiple commits:
+
+- UefiPayloadPkg: Implement support for initial bootloader CFR records
+- UefiPayloadPkg: Update CFR structs, handlers to match coreboot
+- UefiPayloadPkg/CfrSetupMenuDxe: Create an empty line after each form
+- UefiPayloadPkg/CfrSetupMenuDxe: Fix parsing of VARCHAR options
+- UefiPayloadPkg/CfrSetupMenuDxe: Clean up debug output
+- UefiPayloadPkg:CbParseLib: Clean up debug output of CFR forms
+- UefiPayloadPkg: CFR fixes and improvements (#28)
+- UefiPayloadPkg/CbParseLib: Use CRC32 function compatible with coreboot
+- UefiPayloadPkg: Add version number to root CFR struct
+- UefiPayloadPkg: Add min/max/step values and hex flag for CFR number opts
+
+Signed-off-by: Matt DeVillier <matt.devillier@gmail.com>
+(cherry picked from commit 88cd236e71785e4063a41e24f87d788beba7faa3)
+---
+ .../CfrSetupMenuDxe/CfrSetupMenuDxe.inf       |   59 +
+ UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.c    |  109 ++
+ UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.h    |  141 +++
+ UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c | 1011 +++++++++++++++++
+ UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuHii.c |  303 +++++
+ .../CfrSetupMenuDxe/SetupMenuNVDataStruc.h    |   22 +
+ .../CfrSetupMenuDxe/SetupMenuStrings.uni      |   20 +
+ .../CfrSetupMenuDxe/SetupMenuVfr.Vfr          |   31 +
+ UefiPayloadPkg/Include/Coreboot.h             |    9 +
+ .../Include/Guid/CfrSetupMenuGuid.h           |  153 +++
+ .../Include/Library/CfrHelpersLib.h           |   53 +
+ .../Library/CbParseLib/CbParseLib.c           |  112 +-
+ .../Library/CbParseLib/CbParseLib.inf         |    4 +
+ .../Library/CfrHelpersLib/CfrHelpersLib.c     |  170 +++
+ .../Library/CfrHelpersLib/CfrHelpersLib.inf   |   30 +
+ UefiPayloadPkg/UefiPayloadPkg.dec             |    6 +
+ UefiPayloadPkg/UefiPayloadPkg.dsc             |    2 +
+ UefiPayloadPkg/UefiPayloadPkg.fdf             |    1 +
+ 18 files changed, 2233 insertions(+), 3 deletions(-)
+ create mode 100644 UefiPayloadPkg/CfrSetupMenuDxe/CfrSetupMenuDxe.inf
+ create mode 100644 UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.c
+ create mode 100644 UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.h
+ create mode 100644 UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c
+ create mode 100644 UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuHii.c
+ create mode 100644 UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuNVDataStruc.h
+ create mode 100644 UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuStrings.uni
+ create mode 100644 UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuVfr.Vfr
+ create mode 100644 UefiPayloadPkg/Include/Guid/CfrSetupMenuGuid.h
+ create mode 100644 UefiPayloadPkg/Include/Library/CfrHelpersLib.h
+ create mode 100644 UefiPayloadPkg/Library/CfrHelpersLib/CfrHelpersLib.c
+ create mode 100644 UefiPayloadPkg/Library/CfrHelpersLib/CfrHelpersLib.inf
+
+diff --git a/UefiPayloadPkg/CfrSetupMenuDxe/CfrSetupMenuDxe.inf b/UefiPayloadPkg/CfrSetupMenuDxe/CfrSetupMenuDxe.inf
+new file mode 100644
+index 0000000000..ceaa96bee3
+--- /dev/null
++++ b/UefiPayloadPkg/CfrSetupMenuDxe/CfrSetupMenuDxe.inf
+@@ -0,0 +1,59 @@
++## @file
++#  Implementation of a CFR consumer as a HII setup menu.
++#
++#  Copyright (c) 2023, 9elements GmbH.<BR>
++#  SPDX-License-Identifier: BSD-2-Clause-Patent
++#
++##
++
++[Defines]
++  INF_VERSION                    = 0x00010005
++  BASE_NAME                      = CfrSetupMenuDxe
++  FILE_GUID                      = F93C9BC1-D179-49B2-B5C0-94C15862A28D
++  MODULE_TYPE                    = DXE_DRIVER
++  VERSION_STRING                 = 1.0
++  ENTRY_POINT                    = CfrSetupMenuEntryPoint
++  UNLOAD_IMAGE                   = CfrSetupMenuUnload
++
++[Sources]
++  SetupMenu.c
++  SetupMenuCfr.c
++  SetupMenuHii.c
++  SetupMenuVfr.Vfr
++  SetupMenuStrings.uni
++
++[Packages]
++  MdePkg/MdePkg.dec
++  MdeModulePkg/MdeModulePkg.dec
++  UefiPayloadPkg/UefiPayloadPkg.dec
++
++[LibraryClasses]
++  BaseLib
++  BaseMemoryLib
++  CfrHelpersLib
++  DebugLib
++  DevicePathLib
++  HiiLib
++  HobLib
++  MemoryAllocationLib
++  VariablePolicyHelperLib
++  UefiHiiServicesLib
++  UefiLib
++  UefiBootServicesTableLib
++  UefiRuntimeServicesTableLib
++  UefiDriverEntryPoint
++
++[Guids]
++  gEfiCfrSetupMenuFormGuid
++  gEficorebootNvDataGuid
++  gEfiHiiPlatformSetupFormsetGuid               ## CONSUMES ## GUID (Indicate the formset class guid to be displayed)
++  gEfiIfrTianoGuid                              ## CONSUMES ## GUID (Extended IFR Guid Opcode)
++
++[Protocols]
++  gEfiDevicePathProtocolGuid        ## PRODUCES
++  gEfiHiiConfigAccessProtocolGuid   ## PRODUCES
++  gEdkiiVariablePolicyProtocolGuid  ## SOMETIMES_CONSUMES
++
++[Depex]
++  gEfiVariableArchProtocolGuid  AND
++  gEfiVariableWriteArchProtocolGuid
+diff --git a/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.c b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.c
+new file mode 100644
+index 0000000000..41709a64bf
+--- /dev/null
++++ b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.c
+@@ -0,0 +1,109 @@
++/** @file
++  A Setup Menu for configuring boot options defined by bootloader CFR.
++
++  Copyright (c) 2023, 9elements GmbH.<BR>
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++
++**/
++
++#include "SetupMenu.h"
++#include <Library/DebugLib.h>
++#include <Library/HiiLib.h>
++#include <Library/HobLib.h>
++#include <Library/UefiBootServicesTableLib.h>
++#include <Guid/CfrSetupMenuGuid.h>
++#include <Guid/VariableFormat.h>
++
++EDKII_VARIABLE_POLICY_PROTOCOL  *mVariablePolicy = NULL;
++
++/**
++  This function installs the HII form.
++
++**/
++EFI_STATUS
++EFIAPI
++CfrSetupMenuEntryPoint (
++  IN EFI_HANDLE        ImageHandle,
++  IN EFI_SYSTEM_TABLE  *SystemTable
++  )
++{
++  EFI_STATUS  Status;
++
++  //
++  // If the bootloader did not provide any CFR forms, do not register the menu.
++  //
++  if (GetFirstGuidHob (&gEfiCfrSetupMenuFormGuid) == NULL) {
++    return EFI_SUCCESS;
++  }
++
++  Status = gBS->LocateProtocol (&gEdkiiVariablePolicyProtocolGuid, NULL, (VOID **)&mVariablePolicy);
++  if (EFI_ERROR (Status)) {
++    DEBUG ((DEBUG_WARN, "CFR: Unable to lock variables!\n"));
++  }
++
++  //
++  // Install Device Path and Config Access protocols to driver handle
++  //
++  mSetupMenuPrivate.DriverHandle = NULL;
++  Status = gBS->InstallMultipleProtocolInterfaces (
++                  &mSetupMenuPrivate.DriverHandle,
++                  &gEfiDevicePathProtocolGuid,
++                  &mSetupMenuHiiVendorDevicePath,
++                  &gEfiHiiConfigAccessProtocolGuid,
++                  &mSetupMenuPrivate.ConfigAccess,
++                  NULL
++                  );
++  ASSERT_EFI_ERROR (Status);
++
++  //
++  // Publish our HII data.
++  //
++  mSetupMenuPrivate.HiiHandle = HiiAddPackages (
++                                  &mSetupMenuFormsetGuid,
++                                  mSetupMenuPrivate.DriverHandle,
++                                  SetupMenuVfrBin,
++                                  CfrSetupMenuDxeStrings,
++                                  NULL
++                                  );
++  ASSERT (mSetupMenuPrivate.HiiHandle != NULL);
++
++  //
++  // Insert runtime components from bootloader's CFR table.
++  //
++  CfrCreateRuntimeComponents ();
++
++  return Status;
++}
++
++/**
++  This function uninstalls the HII form.
++
++**/
++EFI_STATUS
++EFIAPI
++CfrSetupMenuUnload (
++  IN EFI_HANDLE        ImageHandle
++  )
++{
++  EFI_STATUS  Status;
++
++  //
++  // Uninstall Device Path and Config Access protocols
++  //
++  Status = gBS->UninstallMultipleProtocolInterfaces (
++                  mSetupMenuPrivate.DriverHandle,
++                  &gEfiDevicePathProtocolGuid,
++                  &mSetupMenuHiiVendorDevicePath,
++                  &gEfiHiiConfigAccessProtocolGuid,
++                  &mSetupMenuPrivate.ConfigAccess,
++                  NULL
++                  );
++  ASSERT_EFI_ERROR (Status);
++
++  //
++  // Remove our HII data
++  //
++  HiiRemovePackages (mSetupMenuPrivate.HiiHandle);
++
++  return Status;
++}
+diff --git a/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.h b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.h
+new file mode 100644
+index 0000000000..9754779e29
+--- /dev/null
++++ b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.h
+@@ -0,0 +1,141 @@
++/** @file
++  A Setup Menu for configuring boot options defined by bootloader CFR.
++
++  Copyright (c) 2023, 9elements GmbH.<BR>
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++
++**/
++
++#ifndef _SETUP_MENU_H_
++#define _SETUP_MENU_H_
++
++#include <PiDxe.h>
++#include <Protocol/DevicePath.h>
++#include <Protocol/HiiConfigAccess.h>
++#include <Protocol/VariablePolicy.h>
++#include <Guid/MdeModuleHii.h>
++#include "SetupMenuNVDataStruc.h"
++
++extern EDKII_VARIABLE_POLICY_PROTOCOL  *mVariablePolicy;
++
++extern UINT8  SetupMenuVfrBin[];
++
++#define SETUP_MENU_CALLBACK_DATA_SIGNATURE SIGNATURE_32 ('D', 'M', 'C', 'B')
++
++typedef struct {
++  UINTN                           Signature;
++
++  //
++  // HII relative handles
++  //
++  EFI_HII_HANDLE                  HiiHandle;
++  EFI_HANDLE                      DriverHandle;
++
++  //
++  // Produced protocols
++  //
++  EFI_HII_CONFIG_ACCESS_PROTOCOL   ConfigAccess;
++} SETUP_MENU_CALLBACK_DATA;
++
++typedef struct {
++  VENDOR_DEVICE_PATH                VendorDevicePath;
++  EFI_DEVICE_PATH_PROTOCOL          End;
++} HII_VENDOR_DEVICE_PATH;
++
++extern SETUP_MENU_CALLBACK_DATA  mSetupMenuPrivate;
++extern EFI_GUID                  mSetupMenuFormsetGuid;
++extern HII_VENDOR_DEVICE_PATH    mSetupMenuHiiVendorDevicePath;
++
++/**
++  Create runtime components by iterating CFR forms.
++
++**/
++VOID
++EFIAPI
++CfrCreateRuntimeComponents (
++  VOID
++  );
++
++/**
++  This function allows a caller to extract the current configuration for one
++  or more named elements from the target driver.
++
++
++  @param This            Points to the EFI_HII_CONFIG_ACCESS_PROTOCOL.
++  @param Request         A null-terminated Unicode string in <ConfigRequest> format.
++  @param Progress        On return, points to a character in the Request string.
++                         Points to the string's null terminator if request was successful.
++                         Points to the most recent '&' before the first failing name/value
++                         pair (or the beginning of the string if the failure is in the
++                         first name/value pair) if the request was not successful.
++  @param Results         A null-terminated Unicode string in <ConfigAltResp> format which
++                         has all values filled in for the names in the Request string.
++                         String to be allocated by the called function.
++
++  @retval  EFI_SUCCESS            The Results is filled with the requested values.
++  @retval  EFI_OUT_OF_RESOURCES   Not enough memory to store the results.
++  @retval  EFI_INVALID_PARAMETER  Request is illegal syntax, or unknown name.
++  @retval  EFI_NOT_FOUND          Routing data doesn't match any storage in this driver.
++
++**/
++EFI_STATUS
++EFIAPI
++SetupMenuExtractConfig (
++  IN  CONST EFI_HII_CONFIG_ACCESS_PROTOCOL   *This,
++  IN  CONST EFI_STRING                       Request,
++  OUT EFI_STRING                             *Progress,
++  OUT EFI_STRING                             *Results
++  );
++
++/**
++  This function processes the results of changes in configuration.
++
++
++  @param This            Points to the EFI_HII_CONFIG_ACCESS_PROTOCOL.
++  @param Configuration   A null-terminated Unicode string in <ConfigResp> format.
++  @param Progress        A pointer to a string filled in with the offset of the most
++                         recent '&' before the first failing name/value pair (or the
++                         beginning of the string if the failure is in the first
++                         name/value pair) or the terminating NULL if all was successful.
++
++  @retval  EFI_SUCCESS            The Results is processed successfully.
++  @retval  EFI_INVALID_PARAMETER  Configuration is NULL.
++  @retval  EFI_NOT_FOUND          Routing data doesn't match any storage in this driver.
++
++**/
++EFI_STATUS
++EFIAPI
++SetupMenuRouteConfig (
++  IN  CONST EFI_HII_CONFIG_ACCESS_PROTOCOL   *This,
++  IN  CONST EFI_STRING                       Configuration,
++  OUT EFI_STRING                             *Progress
++  );
++
++/**
++  This function is invoked if user selected a interactive opcode from Setup Menu
++  Formset. If user set VBIOS, the new value is saved to EFI variable.
++
++  @param This            Points to the EFI_HII_CONFIG_ACCESS_PROTOCOL.
++  @param Action          Specifies the type of action taken by the browser.
++  @param QuestionId      A unique value which is sent to the original exporting driver
++                         so that it can identify the type of data to expect.
++  @param Type            The type of value for the question.
++  @param Value           A pointer to the data being sent to the original exporting driver.
++  @param ActionRequest   On return, points to the action requested by the callback function.
++
++  @retval  EFI_SUCCESS           The callback successfully handled the action.
++  @retval  EFI_INVALID_PARAMETER The setup browser call this function with invalid parameters.
++
++**/
++EFI_STATUS
++EFIAPI
++SetupMenuCallback (
++  IN  CONST EFI_HII_CONFIG_ACCESS_PROTOCOL   *This,
++  IN  EFI_BROWSER_ACTION                     Action,
++  IN  EFI_QUESTION_ID                        QuestionId,
++  IN  UINT8                                  Type,
++  IN  EFI_IFR_TYPE_VALUE                     *Value,
++  OUT EFI_BROWSER_ACTION_REQUEST             *ActionRequest
++  );
++
++#endif
+diff --git a/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c
+new file mode 100644
+index 0000000000..ef4801629c
+--- /dev/null
++++ b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c
+@@ -0,0 +1,1011 @@
++/** @file
++  A Setup Menu for configuring boot options defined by bootloader CFR.
++  This file parses CFR to produce HII IFR.
++
++  Copyright (c) 2023, 9elements GmbH.<BR>
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++
++**/
++
++#include "SetupMenu.h"
++#include <Library/BaseLib.h>
++#include <Library/BaseMemoryLib.h>
++#include <Library/CfrHelpersLib.h>
++#include <Library/DebugLib.h>
++#include <Library/HiiLib.h>
++#include <Library/HobLib.h>
++#include <Library/MemoryAllocationLib.h>
++#include <Library/VariablePolicyHelperLib.h>
++#include <Library/UefiRuntimeServicesTableLib.h>
++#include <Guid/CfrSetupMenuGuid.h>
++#include <Guid/VariableFormat.h>
++
++/**
++  CFR_VARBINARY records are used as option name and UI name and help text.
++  Convert one to formats used for EDK2 HII.
++
++  Caller is responsible for freeing the UnicodeString pool.
++
++**/
++STATIC
++VOID
++EFIAPI
++CfrConvertVarBinaryToStrings (
++  IN     CFR_VARBINARY  *CfrString,
++  IN OUT CHAR16         **UnicodeString,
++  IN OUT EFI_STRING_ID  *HiiStringId      OPTIONAL
++  )
++{
++  EFI_STATUS  Status;
++
++  ASSERT ((CfrString != NULL) && (UnicodeString != NULL));
++
++  *UnicodeString = AllocatePool (CfrString->data_length * sizeof (CHAR16));
++  ASSERT (*UnicodeString != NULL);
++  Status = AsciiStrToUnicodeStrS (
++             (CHAR8 *)CfrString->data,
++             *UnicodeString,
++             CfrString->data_length
++             );
++  ASSERT_EFI_ERROR (Status);
++
++  if (HiiStringId != NULL) {
++    *HiiStringId = HiiSetString (
++                     mSetupMenuPrivate.HiiHandle,
++                     0,
++                     *UnicodeString,
++                     NULL
++                     );
++    ASSERT (*HiiStringId != 0);
++  }
++}
++
++/**
++  CFR_VARBINARY records are used to store a list of dependency values.
++  Get a pointer to an array of enum values and its length.
++**/
++STATIC
++VOID
++EFIAPI
++CfrConvertVarBinaryToUint32Array (
++  IN     CFR_VARBINARY  *CfrList,
++  IN OUT UINT32         **Array,
++     OUT UINT32         *ArrayLength
++  )
++{
++  ASSERT ((CfrList != NULL) && (Array != NULL) && (ArrayLength != NULL));
++
++  *Array = (UINT32 *)CfrList->data;
++  *ArrayLength = CfrList->data_length / sizeof (UINT32);
++}
++
++/**
++  Produce unconditional HII `*_IF` for CFR flags.
++
++  Caller to close each `*_IF` with `HiiCreateEndOpCode()`.
++
++**/
++STATIC
++VOID
++EFIAPI
++CfrProduceHiiForFlags (
++  IN VOID   *StartOpCodeHandle,
++  IN UINT8  OpCode
++  )
++{
++  EFI_IFR_OP_HEADER  IfOpHeader;
++  UINT8              *TempHiiBuffer;
++  EFI_IFR_OP_HEADER  ConditionTrue;
++
++  if ((OpCode != EFI_IFR_SUPPRESS_IF_OP) && (OpCode != EFI_IFR_GRAY_OUT_IF_OP)) {
++    return;
++  }
++
++  IfOpHeader.OpCode = OpCode;
++  IfOpHeader.Length = sizeof (EFI_IFR_OP_HEADER);
++  // `if` statements are new scopes
++  IfOpHeader.Scope = 1;
++
++  TempHiiBuffer = HiiCreateRawOpCodes (
++                    StartOpCodeHandle,
++                    (UINT8 *)&IfOpHeader,
++                    sizeof (EFI_IFR_OP_HEADER)
++                    );
++  ASSERT (TempHiiBuffer != NULL);
++
++  ConditionTrue.OpCode = EFI_IFR_TRUE_OP;
++  ConditionTrue.Length = sizeof (EFI_IFR_OP_HEADER);
++  // Same scope as above statement
++  ConditionTrue.Scope = 0;
++
++  TempHiiBuffer = HiiCreateRawOpCodes (
++                    StartOpCodeHandle,
++                    (UINT8 *)&ConditionTrue,
++                    sizeof (EFI_IFR_OP_HEADER)
++                    );
++  ASSERT (TempHiiBuffer != NULL);
++}
++
++/**
++  Produce conditional HII `SUPPRESS_IF` based on a dependency:
++
++  Caller to close each `SUPPRESS_IF` with `HiiCreateEndOpCode()`.
++
++**/
++STATIC
++VOID
++EFIAPI
++CfrProduceHiiForDependency (
++  IN VOID    *StartOpCodeHandle,
++  IN UINTN   DependencyId,
++  IN UINT32  *DepValues,
++  IN UINT32  NumDepValues
++  )
++{
++  EFI_IFR_OP_HEADER       OpHeader;
++  UINT8                   *TempHiiBuffer;
++  UINTN                   EqIdValListSize;
++  EFI_IFR_EQ_ID_VAL_LIST  *EqIdValList;
++  EFI_IFR_EQ_ID_VAL       EqIdVal;
++  UINTN                   Index;
++
++  OpHeader.OpCode = EFI_IFR_SUPPRESS_IF_OP;
++  OpHeader.Length = sizeof (EFI_IFR_OP_HEADER);
++  OpHeader.Scope = 1;
++
++  TempHiiBuffer = HiiCreateRawOpCodes (
++                    StartOpCodeHandle,
++                    (UINT8 *)&OpHeader,
++                    sizeof (EFI_IFR_OP_HEADER)
++                    );
++  ASSERT (TempHiiBuffer != NULL);
++
++  if (NumDepValues != 0) {
++    EqIdValListSize = sizeof (EFI_IFR_EQ_ID_VAL_LIST) + ((NumDepValues - 1) * sizeof (UINT16));
++    EqIdValList = AllocatePool (EqIdValListSize);
++    ASSERT (EqIdValList != NULL);
++
++    EqIdValList->Header.OpCode = EFI_IFR_EQ_ID_VAL_LIST_OP;
++    EqIdValList->Header.Length = EqIdValListSize;
++    EqIdValList->Header.Scope = 1;
++
++    EqIdValList->QuestionId = DependencyId;
++    EqIdValList->ListLength = NumDepValues;
++    for (Index = 0; Index < NumDepValues; Index++) {
++      EqIdValList->ValueList[Index] = (UINT16)*DepValues++;
++    }
++
++    TempHiiBuffer = HiiCreateRawOpCodes (
++                      StartOpCodeHandle,
++                      (UINT8 *)EqIdValList,
++                      EqIdValListSize
++                      );
++    ASSERT (TempHiiBuffer != NULL);
++
++    FreePool (EqIdValList);
++
++    OpHeader.OpCode = EFI_IFR_NOT_OP;
++    OpHeader.Length = sizeof (EFI_IFR_OP_HEADER);
++    OpHeader.Scope = 0;
++
++    TempHiiBuffer = HiiCreateRawOpCodes (
++                      StartOpCodeHandle,
++                      (UINT8 *)&OpHeader,
++                      sizeof (EFI_IFR_OP_HEADER)
++                      );
++    ASSERT (TempHiiBuffer != NULL);
++  } else {
++    EqIdVal.Header.OpCode = EFI_IFR_EQ_ID_VAL_OP;
++    EqIdVal.Header.Length = sizeof (EFI_IFR_EQ_ID_VAL);
++    EqIdVal.Header.Scope = 1;
++    EqIdVal.QuestionId = DependencyId;
++    EqIdVal.Value = 0;
++
++    TempHiiBuffer = HiiCreateRawOpCodes (
++                      StartOpCodeHandle,
++                      (UINT8 *)&EqIdVal,
++                      sizeof (EFI_IFR_EQ_ID_VAL)
++                      );
++    ASSERT (TempHiiBuffer != NULL);
++  }
++
++  OpHeader.OpCode = EFI_IFR_END_OP;
++  OpHeader.Length = sizeof (EFI_IFR_OP_HEADER);
++  OpHeader.Scope = 0;
++
++  TempHiiBuffer = HiiCreateRawOpCodes (
++                    StartOpCodeHandle,
++                    (UINT8 *)&OpHeader,
++                    sizeof (EFI_IFR_OP_HEADER)
++                    );
++  ASSERT (TempHiiBuffer != NULL);
++}
++
++/**
++  Produce variable and VARSTORE for CFR option name.
++
++**/
++STATIC
++VOID
++EFIAPI
++CfrProduceStorageForOption (
++  IN CFR_VARBINARY  *CfrOptionName,
++  IN VOID           *CfrOptionDefaultValue,
++  IN UINTN          CfrOptionLength,
++  IN UINT8          OptionFlags,
++  IN VOID           *StartOpCodeHandle,
++  IN UINTN          QuestionIdVarStoreId
++  )
++{
++  CHAR16            *VariableCfrName;
++  UINT32            VariableAttributes;
++  UINTN             DataSize;
++  EFI_STATUS        Status;
++  UINTN             OptionNameLength;
++  UINTN             VarStoreStructSize;
++  EFI_IFR_VARSTORE  *VarStore;
++  UINT8             *TempHiiBuffer;
++
++  //
++  // Initialise defaults for VARSTORE variable
++  //
++  CfrConvertVarBinaryToStrings (CfrOptionName, &VariableCfrName, NULL);
++
++  //
++  // Variables can be runtime accessible later, if desired
++  //
++  VariableAttributes = EFI_VARIABLE_BOOTSERVICE_ACCESS;
++  if (!(OptionFlags & CFR_OPTFLAG_VOLATILE)) {
++    VariableAttributes |= EFI_VARIABLE_NON_VOLATILE;
++  }
++  if (OptionFlags & CFR_OPTFLAG_RUNTIME) {
++    VariableAttributes |= EFI_VARIABLE_RUNTIME_ACCESS;
++  }
++
++  DataSize = 0;
++  Status = gRT->GetVariable (
++                  VariableCfrName,
++                  &gEficorebootNvDataGuid,
++                  NULL,
++                  &DataSize,
++                  NULL
++                  );
++  if (Status == EFI_NOT_FOUND) {
++    DataSize = CfrOptionLength;
++    Status = gRT->SetVariable (
++                    VariableCfrName,
++                    &gEficorebootNvDataGuid,
++                    VariableAttributes,
++                    DataSize,
++                    CfrOptionDefaultValue
++                    );
++    ASSERT_EFI_ERROR (Status);
++  }
++
++  if (OptionFlags & CFR_OPTFLAG_READONLY && mVariablePolicy != NULL) {
++    Status = RegisterBasicVariablePolicy (
++               mVariablePolicy,
++               &gEficorebootNvDataGuid,
++               VariableCfrName,
++               VARIABLE_POLICY_NO_MIN_SIZE,
++               VARIABLE_POLICY_NO_MAX_SIZE,
++               VARIABLE_POLICY_NO_MUST_ATTR,
++               VARIABLE_POLICY_NO_CANT_ATTR,
++               VARIABLE_POLICY_TYPE_LOCK_NOW
++               );
++    if (EFI_ERROR (Status)) {
++      DEBUG ((DEBUG_WARN, "CFR: Failed to lock variable \"%s\"!\n", VariableCfrName));
++    }
++  }
++
++  FreePool (VariableCfrName);
++
++  //
++  // Build a `varstore` and copy it as raw HII opcodes. Then free this
++  //
++  /* Struct contains space for terminator only, allocate with name too */
++  OptionNameLength = AsciiStrLen ((CHAR8 *)CfrOptionName->data);
++  VarStoreStructSize = sizeof (EFI_IFR_VARSTORE) + OptionNameLength;
++  ASSERT (VarStoreStructSize <= 0x7F);
++  if (VarStoreStructSize > 0x7F) {
++    DEBUG ((DEBUG_ERROR, "CFR: Option name length 0x%x is too long!\n", OptionNameLength));
++    return;
++  }
++
++  VarStore = AllocateZeroPool (VarStoreStructSize);
++  ASSERT (VarStore != NULL);
++  if (VarStore == NULL) {
++    DEBUG ((DEBUG_ERROR, "CFR: Failed to allocate memory for varstore!\n"));
++    return;
++  }
++
++  VarStore->Header.OpCode = EFI_IFR_VARSTORE_OP;
++  VarStore->Header.Length = VarStoreStructSize;
++
++  /* Direct mapping */
++  VarStore->VarStoreId = QuestionIdVarStoreId;
++  VarStore->Size = CfrOptionLength;
++
++  CopyMem (&VarStore->Guid, &gEficorebootNvDataGuid, sizeof (EFI_GUID));
++  CopyMem (VarStore->Name, CfrOptionName->data, CfrOptionName->data_length);
++
++  TempHiiBuffer = HiiCreateRawOpCodes (
++                    StartOpCodeHandle,
++                    (UINT8 *)VarStore,
++                    VarStoreStructSize
++                    );
++  ASSERT (TempHiiBuffer != NULL);
++  FreePool (VarStore);
++}
++
++/**
++  Process one CFR form - its UI name - and create HII component.
++  Therefore, *do not* advanced index by the size field.
++
++  It's currently too difficult to produce form HII IFR, because these
++  seem unable to be nested, so generating the VfrBin at runtime would be required.
++  However, maybe we'll look into that, or HII "scopes" later.
++
++**/
++STATIC
++VOID
++EFIAPI
++CfrProcessFormOption (
++  IN     CFR_OPTION_FORM  *Option,
++  IN     VOID             *StartOpCodeHandle,
++  IN OUT UINTN            *ProcessedLength
++  )
++{
++  CFR_VARBINARY       *CfrFormName;
++  UINT32              *DepValues;
++  UINT32              NumDepValues;
++  CFR_VARBINARY       *CfrDepValues;
++  CHAR16              *HiiFormNameString;
++  EFI_STRING_ID       HiiFormNameStringId;
++  UINT8               *TempHiiBuffer;
++
++  //
++  // Extract variable-length fields that follow the header
++  //
++  *ProcessedLength += sizeof (CFR_OPTION_FORM);
++  CfrFormName = CfrExtractVarBinary ((UINT8 *)Option, ProcessedLength, CB_TAG_CFR_VARCHAR_UI_NAME);
++  ASSERT (CfrFormName != NULL);
++
++  // Dependency values are optional
++  DepValues = NULL;
++  NumDepValues = 0;
++  CfrDepValues = CfrExtractVarBinary ((UINT8 *)Option, ProcessedLength, CB_TAG_CFR_DEP_VALUES);
++  if (CfrDepValues != NULL) {
++    ASSERT (CfrDepValues->tag == CB_TAG_CFR_DEP_VALUES);
++    CfrConvertVarBinaryToUint32Array (CfrDepValues, &DepValues, &NumDepValues);
++  }
++
++  DEBUG ((
++    DEBUG_INFO,
++    "CFR: Processing form \"%a\", size 0x%x\n",
++    CfrFormName->data,
++    Option->size
++    ));
++
++  CfrConvertVarBinaryToStrings (CfrFormName, &HiiFormNameString, &HiiFormNameStringId);
++  FreePool (HiiFormNameString);
++
++  if (Option->dependency_id) {
++    CfrProduceHiiForDependency (
++      StartOpCodeHandle,
++      CFR_COMPONENT_START + Option->dependency_id,
++      DepValues,
++      NumDepValues
++      );
++  }
++
++  if (Option->flags & CFR_OPTFLAG_SUPPRESS) {
++    CfrProduceHiiForFlags (StartOpCodeHandle, EFI_IFR_SUPPRESS_IF_OP);
++  }
++  if (Option->flags & CFR_OPTFLAG_INACTIVE) {
++    CfrProduceHiiForFlags (StartOpCodeHandle, EFI_IFR_GRAY_OUT_IF_OP);
++  }
++
++  TempHiiBuffer = HiiCreateSubTitleOpCode (
++                    StartOpCodeHandle,
++                    HiiFormNameStringId,
++                    STRING_TOKEN (STR_EMPTY_STRING),
++                    0,
++                    0
++                    );
++  ASSERT (TempHiiBuffer != NULL);
++
++  if (Option->flags & CFR_OPTFLAG_INACTIVE) {
++    TempHiiBuffer = HiiCreateEndOpCode (StartOpCodeHandle);
++    ASSERT (TempHiiBuffer != NULL);
++  }
++  if (Option->flags & CFR_OPTFLAG_SUPPRESS) {
++    TempHiiBuffer = HiiCreateEndOpCode (StartOpCodeHandle);
++    ASSERT (TempHiiBuffer != NULL);
++  }
++
++  if (Option->dependency_id) {
++    TempHiiBuffer = HiiCreateEndOpCode (StartOpCodeHandle);
++    ASSERT (TempHiiBuffer != NULL);
++  }
++}
++
++/**
++  Process one CFR numeric option and create HII component.
++
++**/
++STATIC
++VOID
++EFIAPI
++CfrProcessNumericOption (
++  IN     CFR_OPTION_NUMERIC  *Option,
++  IN     VOID                *StartOpCodeHandle,
++  IN OUT UINTN               *ProcessedLength
++  )
++{
++  UINTN           OptionProcessedLength;
++  CFR_VARBINARY   *CfrOptionName;
++  CFR_VARBINARY   *CfrDisplayName;
++  CFR_VARBINARY   *CfrHelpText;
++  UINT32          *DepValues;
++  UINT32          NumDepValues;
++  CFR_VARBINARY   *CfrDepValues;
++  UINTN           QuestionIdVarStoreId;
++  UINT8           QuestionFlags;
++  VOID            *DefaultOpCodeHandle;
++  UINT8           *TempHiiBuffer;
++  CHAR16          *HiiDisplayString;
++  EFI_STRING_ID   HiiDisplayStringId;
++  CHAR16          *HiiHelpText;
++  EFI_STRING_ID   HiiHelpTextId;
++  VOID            *OptionOpCodeHandle;
++  CFR_ENUM_VALUE  *CfrEnumValues;
++  CFR_VARBINARY   *CfrEnumUiString;
++  CHAR16          *HiiEnumStrings;
++  EFI_STRING_ID   HiiEnumStringsId;
++
++  //
++  // Extract variable-length fields that follow the header
++  //
++  OptionProcessedLength = sizeof (CFR_OPTION_NUMERIC);
++
++  CfrOptionName = CfrExtractVarBinary ((UINT8 *)Option, &OptionProcessedLength, CB_TAG_CFR_VARCHAR_OPT_NAME);
++  ASSERT (CfrOptionName != NULL);
++  CfrDisplayName = CfrExtractVarBinary ((UINT8 *)Option, &OptionProcessedLength, CB_TAG_CFR_VARCHAR_UI_NAME);
++  ASSERT (CfrDisplayName != NULL);
++
++  // Help text is optional
++  CfrHelpText = CfrExtractVarBinary ((UINT8 *)Option, &OptionProcessedLength, CB_TAG_CFR_VARCHAR_UI_HELPTEXT);
++  if (CfrHelpText != NULL) {
++    ASSERT (CfrHelpText->tag == CB_TAG_CFR_VARCHAR_UI_HELPTEXT);
++  }
++
++  // Dependency values are optional
++  DepValues = NULL;
++  NumDepValues = 0;
++  CfrDepValues = CfrExtractVarBinary ((UINT8 *)Option, &OptionProcessedLength, CB_TAG_CFR_DEP_VALUES);
++  if (CfrDepValues != NULL) {
++    ASSERT (CfrDepValues->tag == CB_TAG_CFR_DEP_VALUES);
++    CfrConvertVarBinaryToUint32Array (CfrDepValues, &DepValues, &NumDepValues);
++  }
++
++  DEBUG ((
++    DEBUG_INFO,
++    "CFR: Processing option \"%a\", size 0x%x\n",
++    CfrOptionName->data,
++    Option->size
++    ));
++
++  //
++  // Processing start
++  //
++  QuestionIdVarStoreId = CFR_COMPONENT_START + Option->object_id;
++  CfrProduceStorageForOption (
++    CfrOptionName,
++    &Option->default_value,
++    sizeof (Option->default_value),
++    Option->flags,
++    StartOpCodeHandle,
++    QuestionIdVarStoreId
++    );
++
++  QuestionFlags = EFI_IFR_FLAG_RESET_REQUIRED;
++  if (Option->flags & CFR_OPTFLAG_READONLY) {
++    QuestionFlags |= EFI_IFR_FLAG_READ_ONLY;
++  }
++
++  if (Option->dependency_id) {
++    CfrProduceHiiForDependency (
++      StartOpCodeHandle,
++      CFR_COMPONENT_START + Option->dependency_id,
++      DepValues,
++      NumDepValues
++      );
++  }
++
++  if (Option->flags & CFR_OPTFLAG_SUPPRESS) {
++    CfrProduceHiiForFlags (StartOpCodeHandle, EFI_IFR_SUPPRESS_IF_OP);
++  }
++  if (Option->flags & CFR_OPTFLAG_INACTIVE) {
++    CfrProduceHiiForFlags (StartOpCodeHandle, EFI_IFR_GRAY_OUT_IF_OP);
++  }
++
++  DefaultOpCodeHandle = HiiAllocateOpCodeHandle ();
++  ASSERT (DefaultOpCodeHandle != NULL);
++
++  TempHiiBuffer = HiiCreateDefaultOpCode (
++                    DefaultOpCodeHandle,
++                    EFI_HII_DEFAULT_CLASS_STANDARD,
++                    EFI_IFR_TYPE_NUM_SIZE_32,
++                    Option->default_value
++                    );
++  ASSERT (TempHiiBuffer != NULL);
++
++  CfrConvertVarBinaryToStrings (CfrDisplayName, &HiiDisplayString, &HiiDisplayStringId);
++  FreePool (HiiDisplayString);
++
++  if (CfrHelpText != NULL) {
++    CfrConvertVarBinaryToStrings (CfrHelpText, &HiiHelpText, &HiiHelpTextId);
++    FreePool (HiiHelpText);
++  } else {
++    HiiHelpTextId = STRING_TOKEN (STR_EMPTY_STRING);
++  }
++
++  //
++  // Create HII opcodes, processing complete.
++  //
++  OptionOpCodeHandle = NULL;
++  if (Option->tag == CB_TAG_CFR_OPTION_ENUM) {
++    OptionOpCodeHandle = HiiAllocateOpCodeHandle ();
++    ASSERT (OptionOpCodeHandle != NULL);
++
++    while (OptionProcessedLength < Option->size) {
++      CfrEnumValues = (CFR_ENUM_VALUE *)((UINT8 *)Option + OptionProcessedLength);
++      ASSERT (CfrEnumValues->tag == CB_TAG_CFR_ENUM_VALUE);
++
++      CfrEnumUiString = (CFR_VARBINARY *)((UINT8 *)CfrEnumValues + sizeof (CFR_ENUM_VALUE));
++      ASSERT (CfrEnumUiString->tag == CB_TAG_CFR_VARCHAR_UI_NAME);
++      CfrConvertVarBinaryToStrings (CfrEnumUiString, &HiiEnumStrings, &HiiEnumStringsId);
++      FreePool (HiiEnumStrings);
++
++      TempHiiBuffer = HiiCreateOneOfOptionOpCode (
++                        OptionOpCodeHandle,
++                        HiiEnumStringsId,
++                        0,
++                        EFI_IFR_TYPE_NUM_SIZE_32,
++                        CfrEnumValues->value
++                        );
++      ASSERT (TempHiiBuffer != NULL);
++
++      OptionProcessedLength += CfrEnumValues->size;
++    }
++
++    TempHiiBuffer = HiiCreateOneOfOpCode (
++                      StartOpCodeHandle,
++                      QuestionIdVarStoreId,
++                      QuestionIdVarStoreId,
++                      0x0,
++                      HiiDisplayStringId,
++                      HiiHelpTextId,
++                      QuestionFlags,
++                      EFI_IFR_NUMERIC_SIZE_4,
++                      OptionOpCodeHandle,
++                      DefaultOpCodeHandle
++                      );
++    ASSERT (TempHiiBuffer != NULL);
++  } else if (Option->tag == CB_TAG_CFR_OPTION_NUMBER) {
++    TempHiiBuffer = HiiCreateNumericOpCode (
++                      StartOpCodeHandle,
++                      QuestionIdVarStoreId,
++                      QuestionIdVarStoreId,
++                      0x0,
++                      HiiDisplayStringId,
++                      HiiHelpTextId,
++                      QuestionFlags,
++                      EFI_IFR_NUMERIC_SIZE_4 |
++                        ((Option->display_flags & CFR_NUM_OPT_DISPFLAG_HEX) ?
++                        EFI_IFR_DISPLAY_UINT_HEX : EFI_IFR_DISPLAY_UINT_DEC),
++                      Option->min,
++                      Option->max,
++                      Option->step,
++                      DefaultOpCodeHandle
++                      );
++    ASSERT (TempHiiBuffer != NULL);
++  } else if (Option->tag == CB_TAG_CFR_OPTION_BOOL) {
++    OptionOpCodeHandle = HiiAllocateOpCodeHandle ();
++    ASSERT (OptionOpCodeHandle != NULL);
++
++    TempHiiBuffer = HiiCreateOneOfOptionOpCode (
++                      OptionOpCodeHandle,
++                      STRING_TOKEN (STR_BOOL_ENABLED),
++                      0,
++                      EFI_IFR_TYPE_NUM_SIZE_32,
++                      1
++                      );
++    ASSERT (TempHiiBuffer != NULL);
++
++    TempHiiBuffer = HiiCreateOneOfOptionOpCode (
++                      OptionOpCodeHandle,
++                      STRING_TOKEN (STR_BOOL_DISABLED),
++                      0,
++                      EFI_IFR_TYPE_NUM_SIZE_32,
++                      0
++                      );
++    ASSERT (TempHiiBuffer != NULL);
++
++    TempHiiBuffer = HiiCreateOneOfOpCode (
++                      StartOpCodeHandle,
++                      QuestionIdVarStoreId,
++                      QuestionIdVarStoreId,
++                      0x0,
++                      HiiDisplayStringId,
++                      HiiHelpTextId,
++                      QuestionFlags,
++                      EFI_IFR_NUMERIC_SIZE_4,
++                      OptionOpCodeHandle,
++                      DefaultOpCodeHandle
++                      );
++    ASSERT (TempHiiBuffer != NULL);
++  }
++
++  if (Option->flags & CFR_OPTFLAG_INACTIVE) {
++    TempHiiBuffer = HiiCreateEndOpCode (StartOpCodeHandle);
++    ASSERT (TempHiiBuffer != NULL);
++  }
++  if (Option->flags & CFR_OPTFLAG_SUPPRESS) {
++    TempHiiBuffer = HiiCreateEndOpCode (StartOpCodeHandle);
++    ASSERT (TempHiiBuffer != NULL);
++  }
++
++  if (Option->dependency_id) {
++    TempHiiBuffer = HiiCreateEndOpCode (StartOpCodeHandle);
++    ASSERT (TempHiiBuffer != NULL);
++  }
++
++  if (OptionOpCodeHandle != NULL) {
++    HiiFreeOpCodeHandle (OptionOpCodeHandle);
++  }
++  HiiFreeOpCodeHandle (DefaultOpCodeHandle);
++
++  ASSERT (OptionProcessedLength == Option->size);
++  *ProcessedLength += Option->size;
++}
++
++/**
++  Process one CFR character option and create HII component.
++
++**/
++STATIC
++VOID
++EFIAPI
++CfrProcessCharacterOption (
++  IN     CFR_OPTION_VARCHAR  *Option,
++  IN     VOID                *StartOpCodeHandle,
++  IN OUT UINTN               *ProcessedLength
++  )
++{
++  UINTN           OptionProcessedLength;
++  CFR_VARBINARY   *CfrOptionName;
++  CFR_VARBINARY   *CfrDisplayName;
++  CFR_VARBINARY   *CfrHelpText;
++  CFR_VARBINARY   *CfrDefaultValue;
++  UINT32          *DepValues;
++  UINT32          NumDepValues;
++  CFR_VARBINARY   *CfrDepValues;
++  UINTN           QuestionIdVarStoreId;
++  CHAR16          *HiiDefaultValue;
++  EFI_STRING_ID   HiiDefaultValueId;
++  UINTN           HiiDefaultValueLengthChars;
++  CHAR16          *HiiDisplayString;
++  EFI_STRING_ID   HiiDisplayStringId;
++  CHAR16          *HiiHelpText;
++  EFI_STRING_ID   HiiHelpTextId;
++  UINT8           QuestionFlags;
++  VOID            *DefaultOpCodeHandle;
++  UINT8           *TempHiiBuffer;
++
++  //
++  // Extract variable-length fields that follow the header
++  //
++  ASSERT (sizeof (CFR_OPTION_VARCHAR) == sizeof (CFR_OPTION_COMMENT));
++  OptionProcessedLength = sizeof (CFR_OPTION_VARCHAR);
++
++  // Only true string options have variables
++  CfrOptionName = NULL;
++  if (Option->tag == CB_TAG_CFR_OPTION_VARCHAR) {
++    CfrDefaultValue = CfrExtractVarBinary ((UINT8 *)Option, &OptionProcessedLength, CB_TAG_CFR_VARCHAR_DEF_VALUE);
++    ASSERT (CfrDefaultValue != NULL);
++
++    if (CfrDefaultValue->data_length > 0xFF) {
++      DEBUG ((DEBUG_ERROR, "CFR: Default value length 0x%x is too long!\n", CfrDefaultValue->data_length));
++      *ProcessedLength += Option->size;
++      return;
++    }
++
++    CfrOptionName = CfrExtractVarBinary ((UINT8 *)Option, &OptionProcessedLength, CB_TAG_CFR_VARCHAR_OPT_NAME);
++    ASSERT (CfrOptionName != NULL);
++  }
++
++  CfrDisplayName = CfrExtractVarBinary ((UINT8 *)Option, &OptionProcessedLength, CB_TAG_CFR_VARCHAR_UI_NAME);
++  ASSERT (CfrDisplayName != NULL);
++
++  // Help text is optional
++  CfrHelpText = CfrExtractVarBinary ((UINT8 *)Option, &OptionProcessedLength, CB_TAG_CFR_VARCHAR_UI_HELPTEXT);
++  if (CfrHelpText != NULL) {
++    ASSERT (CfrHelpText->tag == CB_TAG_CFR_VARCHAR_UI_HELPTEXT);
++  }
++
++  // Dependency values are optional
++  DepValues = NULL;
++  NumDepValues = 0;
++  CfrDepValues = CfrExtractVarBinary ((UINT8 *)Option, &OptionProcessedLength, CB_TAG_CFR_DEP_VALUES);
++  if (CfrDepValues != NULL) {
++    ASSERT (CfrDepValues->tag == CB_TAG_CFR_DEP_VALUES);
++    CfrConvertVarBinaryToUint32Array (CfrDepValues, &DepValues, &NumDepValues);
++  }
++
++  DEBUG ((
++    DEBUG_INFO,
++    "CFR: Processing option \"%a\", size 0x%x\n",
++    (CfrOptionName != NULL) ? CfrOptionName->data : CfrDisplayName->data,
++    Option->size
++    ));
++
++  //
++  // Processing start
++  //
++  if (Option->tag == CB_TAG_CFR_OPTION_VARCHAR) {
++    QuestionIdVarStoreId = CFR_COMPONENT_START + Option->object_id;
++
++    if (CfrDefaultValue->data_length > 1) {
++      CfrConvertVarBinaryToStrings (CfrDefaultValue, &HiiDefaultValue, &HiiDefaultValueId);
++      HiiDefaultValueLengthChars = CfrDefaultValue->data_length;
++    } else {
++      HiiDefaultValue = HiiGetString (mSetupMenuPrivate.HiiHandle, STRING_TOKEN (STR_INVALID_STRING), NULL);
++      HiiDefaultValueId = STRING_TOKEN (STR_INVALID_STRING);
++      HiiDefaultValueLengthChars = StrLen (HiiDefaultValue) + 1;
++    }
++
++    CfrProduceStorageForOption (
++      CfrOptionName,
++      HiiDefaultValue,
++      HiiDefaultValueLengthChars * sizeof (CHAR16),
++      Option->flags,
++      StartOpCodeHandle,
++      QuestionIdVarStoreId
++      );
++
++    if (HiiDefaultValue != NULL) {
++      FreePool (HiiDefaultValue);
++    }
++  }
++
++  if (Option->dependency_id) {
++    CfrProduceHiiForDependency (
++      StartOpCodeHandle,
++      CFR_COMPONENT_START + Option->dependency_id,
++      DepValues,
++      NumDepValues
++      );
++  }
++
++  if (Option->flags & CFR_OPTFLAG_SUPPRESS) {
++    CfrProduceHiiForFlags (StartOpCodeHandle, EFI_IFR_SUPPRESS_IF_OP);
++  }
++  if (Option->flags & CFR_OPTFLAG_INACTIVE) {
++    CfrProduceHiiForFlags (StartOpCodeHandle, EFI_IFR_GRAY_OUT_IF_OP);
++  }
++
++  CfrConvertVarBinaryToStrings (CfrDisplayName, &HiiDisplayString, &HiiDisplayStringId);
++  FreePool (HiiDisplayString);
++
++  if (CfrHelpText != NULL) {
++    CfrConvertVarBinaryToStrings (CfrHelpText, &HiiHelpText, &HiiHelpTextId);
++    FreePool (HiiHelpText);
++  } else {
++    HiiHelpTextId = STRING_TOKEN (STR_EMPTY_STRING);
++  }
++
++  //
++  // Create HII opcodes, processing complete.
++  //
++  if (Option->tag == CB_TAG_CFR_OPTION_VARCHAR) {
++    QuestionFlags = EFI_IFR_FLAG_RESET_REQUIRED;
++    if (Option->flags & CFR_OPTFLAG_READONLY) {
++      QuestionFlags |= EFI_IFR_FLAG_READ_ONLY;
++    }
++
++    DefaultOpCodeHandle = HiiAllocateOpCodeHandle ();
++    ASSERT (DefaultOpCodeHandle != NULL);
++
++    TempHiiBuffer = HiiCreateDefaultOpCode (
++                      DefaultOpCodeHandle,
++                      EFI_HII_DEFAULT_CLASS_STANDARD,
++                      EFI_IFR_TYPE_NUM_SIZE_16,
++                      HiiDefaultValueId
++                      );
++    ASSERT (TempHiiBuffer != NULL);
++
++    // TODO: User can adjust length of string?
++    TempHiiBuffer = HiiCreateStringOpCode (
++                      StartOpCodeHandle,
++                      QuestionIdVarStoreId,
++                      QuestionIdVarStoreId,
++                      0x0,
++                      HiiDisplayStringId,
++                      HiiHelpTextId,
++                      QuestionFlags,
++                      0,
++                      HiiDefaultValueLengthChars - 1,
++                      HiiDefaultValueLengthChars - 1,
++                      DefaultOpCodeHandle
++                      );
++    ASSERT (TempHiiBuffer != NULL);
++
++    HiiFreeOpCodeHandle (DefaultOpCodeHandle);
++  } else if (Option->tag == CB_TAG_CFR_OPTION_COMMENT) {
++    TempHiiBuffer = HiiCreateTextOpCode (
++                      StartOpCodeHandle,
++                      HiiDisplayStringId,
++                      HiiHelpTextId,
++                      STRING_TOKEN (STR_EMPTY_STRING)
++                      );
++    ASSERT (TempHiiBuffer != NULL);
++  }
++
++  if (Option->flags & CFR_OPTFLAG_INACTIVE) {
++    TempHiiBuffer = HiiCreateEndOpCode (StartOpCodeHandle);
++    ASSERT (TempHiiBuffer != NULL);
++  }
++  if (Option->flags & CFR_OPTFLAG_SUPPRESS) {
++    TempHiiBuffer = HiiCreateEndOpCode (StartOpCodeHandle);
++    ASSERT (TempHiiBuffer != NULL);
++  }
++
++  if (Option->dependency_id) {
++    TempHiiBuffer = HiiCreateEndOpCode (StartOpCodeHandle);
++    ASSERT (TempHiiBuffer != NULL);
++  }
++
++  ASSERT (OptionProcessedLength == Option->size);
++  *ProcessedLength += Option->size;
++}
++
++/**
++  Create runtime components by iterating CFR forms.
++
++**/
++VOID
++EFIAPI
++CfrCreateRuntimeComponents (
++  VOID
++  )
++{
++  VOID                *StartOpCodeHandle;
++  VOID                *EndOpCodeHandle;
++  EFI_IFR_GUID_LABEL  *StartLabel;
++  EFI_IFR_GUID_LABEL  *EndLabel;
++  EFI_HOB_GUID_TYPE   *GuidHob;
++  CFR_OPTION_FORM     *CfrFormHob;
++  UINTN               ProcessedLength;
++  CFR_OPTION_FORM     *CfrFormData;
++  EFI_STATUS          Status;
++  UINT8               *TempHiiBuffer;
++
++  //
++  // Allocate GUIDed markers at runtime component offset in IFR
++  //
++  StartOpCodeHandle = HiiAllocateOpCodeHandle ();
++  ASSERT (StartOpCodeHandle != NULL);
++
++  EndOpCodeHandle = HiiAllocateOpCodeHandle ();
++  ASSERT (EndOpCodeHandle != NULL);
++
++  StartLabel = (EFI_IFR_GUID_LABEL *)HiiCreateGuidOpCode (
++                                       StartOpCodeHandle,
++                                       &gEfiIfrTianoGuid,
++                                       NULL,
++                                       sizeof (EFI_IFR_GUID_LABEL)
++                                       );
++  ASSERT (StartLabel != NULL);
++
++  StartLabel->ExtendOpCode = EFI_IFR_EXTEND_OP_LABEL;
++  StartLabel->Number       = LABEL_RT_COMP_START;
++
++  EndLabel = (EFI_IFR_GUID_LABEL *)HiiCreateGuidOpCode (
++                                       EndOpCodeHandle,
++                                       &gEfiIfrTianoGuid,
++                                       NULL,
++                                       sizeof (EFI_IFR_GUID_LABEL)
++                                       );
++  ASSERT (EndLabel != NULL);
++
++  EndLabel->ExtendOpCode = EFI_IFR_EXTEND_OP_LABEL;
++  EndLabel->Number       = LABEL_RT_COMP_END;
++
++  //
++  // For each HOB, create forms
++  //
++  GuidHob = GetFirstGuidHob (&gEfiCfrSetupMenuFormGuid);
++  while (GuidHob != NULL) {
++    CfrFormHob = GET_GUID_HOB_DATA (GuidHob);
++
++    ProcessedLength = 0;
++    CfrProcessFormOption (
++      CfrFormHob,
++      StartOpCodeHandle,
++      &ProcessedLength
++      );
++
++    //
++    // Process form tree
++    //
++    while (ProcessedLength < CfrFormHob->size) {
++      CfrFormData = (CFR_OPTION_FORM *)((UINT8 *)CfrFormHob + ProcessedLength);
++
++      switch (CfrFormData->tag) {
++        case CB_TAG_CFR_OPTION_FORM:
++          DEBUG ((DEBUG_INFO, "CFR: Nested form, will produce subtitle\n"));
++          CfrProcessFormOption (
++            (CFR_OPTION_FORM *)CfrFormData,
++            StartOpCodeHandle,
++            &ProcessedLength
++            );
++          break;
++        case CB_TAG_CFR_OPTION_ENUM:
++        case CB_TAG_CFR_OPTION_NUMBER:
++        case CB_TAG_CFR_OPTION_BOOL:
++          CfrProcessNumericOption (
++            (CFR_OPTION_NUMERIC *)CfrFormData,
++            StartOpCodeHandle,
++            &ProcessedLength
++            );
++          break;
++        case CB_TAG_CFR_OPTION_VARCHAR:
++        case CB_TAG_CFR_OPTION_COMMENT:
++          CfrProcessCharacterOption (
++            (CFR_OPTION_VARCHAR *)CfrFormData,
++            StartOpCodeHandle,
++            &ProcessedLength
++            );
++          break;
++        default:
++          DEBUG ((
++            DEBUG_ERROR,
++            "CFR: Offset 0x%x - Unexpected entry 0x%x (size 0x%x)!\n",
++            ProcessedLength,
++            CfrFormData->tag,
++            CfrFormData->size
++            ));
++          ProcessedLength += CfrFormData->size;
++          break;
++      }
++    }
++
++    TempHiiBuffer = HiiCreateSubTitleOpCode (
++                      StartOpCodeHandle,
++                      STRING_TOKEN (STR_EMPTY_STRING),
++                      0,
++                      0,
++                      0
++                  );
++    ASSERT (TempHiiBuffer != NULL);
++
++    GuidHob = GetNextGuidHob (&gEfiCfrSetupMenuFormGuid, GET_NEXT_HOB (GuidHob));
++  }
++
++  //
++  // Submit updates
++  //
++  Status = HiiUpdateForm (
++             mSetupMenuPrivate.HiiHandle,
++             &mSetupMenuFormsetGuid,
++             SETUP_MENU_FORM_ID,
++             StartOpCodeHandle,
++             EndOpCodeHandle
++             );
++  ASSERT_EFI_ERROR (Status);
++
++  HiiFreeOpCodeHandle (StartOpCodeHandle);
++  HiiFreeOpCodeHandle (EndOpCodeHandle);
++}
+diff --git a/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuHii.c b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuHii.c
+new file mode 100644
+index 0000000000..e725894a40
+--- /dev/null
++++ b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuHii.c
+@@ -0,0 +1,303 @@
++/** @file
++  A Setup Menu for configuring boot options defined by bootloader CFR.
++  This file implements the HII Config Access protocol.
++
++  Copyright (c) 2023, 9elements GmbH.<BR>
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++
++**/
++
++#include "SetupMenu.h"
++#include <Library/BaseLib.h>
++#include <Library/DebugLib.h>
++#include <Library/DevicePathLib.h>
++#include <Library/HiiLib.h>
++#include <Library/MemoryAllocationLib.h>
++#include <Library/UefiHiiServicesLib.h>
++#include <Library/UefiLib.h>
++#include <Library/UefiBootServicesTableLib.h>
++#include <Library/UefiRuntimeServicesTableLib.h>
++#include <Guid/VariableFormat.h>
++
++SETUP_MENU_CALLBACK_DATA  mSetupMenuPrivate = {
++  SETUP_MENU_CALLBACK_DATA_SIGNATURE,
++  NULL,
++  NULL,
++  {
++    SetupMenuExtractConfig,
++    SetupMenuRouteConfig,
++    SetupMenuCallback
++  }
++};
++
++EFI_GUID  mSetupMenuFormsetGuid = SETUP_MENU_FORMSET_GUID;
++
++HII_VENDOR_DEVICE_PATH  mSetupMenuHiiVendorDevicePath = {
++  {
++    {
++      HARDWARE_DEVICE_PATH,
++      HW_VENDOR_DP,
++      {
++        (UINT8) (sizeof (VENDOR_DEVICE_PATH)),
++        (UINT8) ((sizeof (VENDOR_DEVICE_PATH)) >> 8)
++      }
++    },
++    SETUP_MENU_FORMSET_GUID
++  },
++  {
++    END_DEVICE_PATH_TYPE,
++    END_ENTIRE_DEVICE_PATH_SUBTYPE,
++    {
++      (UINT8) (END_DEVICE_PATH_LENGTH),
++      (UINT8) ((END_DEVICE_PATH_LENGTH) >> 8)
++    }
++  }
++};
++
++/**
++  Parses a HII config string for the variable name.
++  1. Find offset of "NAME=" value.
++  2. Convert string value in Unicode-encoded hex to ASCII.
++  3. Fixup Unicode string.
++
++  It's assumed that "NAME=" has a value, hopefully tolerated.
++  It's assumed that ConfigRouting generates endian-specific strings,
++    so `SwapBytes16` is always required on `StrHexToBytes` byte-array.
++
++  Caller to free VariableString pool.
++
++**/
++STATIC
++CHAR16 *
++EFIAPI
++ConvertHiiConfigStringToVariableString (
++  IN  EFI_STRING  HiiConfigString
++  )
++{
++  EFI_STRING  ConfigStringNameStart;
++  EFI_STRING  ConfigStringNameEnd;
++  UINTN       ConfigStringNameLengthChars;
++  UINTN       ConvertStringLengthBytes;
++  UINTN       VariableStringLengthChars;
++  CHAR16      *VariableString;
++  UINTN       Index;
++  EFI_STATUS  Status;
++
++  ConfigStringNameStart = HiiConfigString;
++
++  //
++  // Find the start and length of variable name in stringified hex
++  //
++  ConfigStringNameStart = StrStr (ConfigStringNameStart, L"&NAME=");
++  ASSERT (ConfigStringNameStart != NULL);
++  ConfigStringNameStart += StrLen (L"&NAME=");
++
++  ConfigStringNameEnd = StrStr (ConfigStringNameStart, L"&");
++  ASSERT (ConfigStringNameEnd != NULL);
++
++  ConfigStringNameLengthChars = ConfigStringNameEnd - ConfigStringNameStart;
++
++  //
++  // Convert stringified hex to bytes, then fixup to endian-correct string
++  //
++  ConvertStringLengthBytes = ConfigStringNameLengthChars / 2;
++  VariableStringLengthChars = ConvertStringLengthBytes / 2;
++  VariableString = AllocatePool (ConvertStringLengthBytes + sizeof (CHAR16));
++  Status = StrHexToBytes (
++             ConfigStringNameStart,
++             ConfigStringNameLengthChars,
++             (UINT8 *)VariableString,
++             ConvertStringLengthBytes
++             );
++  ASSERT_EFI_ERROR (Status);
++
++  VariableString[VariableStringLengthChars] = 0;
++
++  for (Index = 0; Index < VariableStringLengthChars; Index++) {
++    VariableString[Index] = SwapBytes16 (VariableString[Index]);
++  }
++
++  return VariableString;
++}
++
++/**
++  This function allows a caller to extract the current configuration for one
++  or more named elements from the target driver.
++
++
++  @param This            Points to the EFI_HII_CONFIG_ACCESS_PROTOCOL.
++  @param Request         A null-terminated Unicode string in <ConfigRequest> format.
++  @param Progress        On return, points to a character in the Request string.
++                         Points to the string's null terminator if request was successful.
++                         Points to the most recent '&' before the first failing name/value
++                         pair (or the beginning of the string if the failure is in the
++                         first name/value pair) if the request was not successful.
++  @param Results         A null-terminated Unicode string in <ConfigAltResp> format which
++                         has all values filled in for the names in the Request string.
++                         String to be allocated by the called function.
++
++  @retval  EFI_SUCCESS            The Results is filled with the requested values.
++  @retval  EFI_OUT_OF_RESOURCES   Not enough memory to store the results.
++  @retval  EFI_INVALID_PARAMETER  Request is illegal syntax, or unknown name.
++  @retval  EFI_NOT_FOUND          Routing data doesn't match any storage in this driver.
++
++**/
++EFI_STATUS
++EFIAPI
++SetupMenuExtractConfig (
++  IN  CONST EFI_HII_CONFIG_ACCESS_PROTOCOL   *This,
++  IN  CONST EFI_STRING                       Request,
++  OUT EFI_STRING                             *Progress,
++  OUT EFI_STRING                             *Results
++  )
++{
++  CHAR16      *VariableName;
++  VOID        *VariableOption;
++  UINTN       DataSize;
++  EFI_STATUS  Status;
++
++  if ((Request == NULL) || (Progress == NULL) || (Results == NULL)) {
++    return EFI_INVALID_PARAMETER;
++  }
++
++  *Progress = Request;
++
++  // Get variable
++  VariableName = ConvertHiiConfigStringToVariableString (Request);
++  Status = GetVariable2 (
++             VariableName,
++             &gEficorebootNvDataGuid,
++             &VariableOption,
++             &DataSize
++             );
++  ASSERT_EFI_ERROR (Status);
++
++  // Use HII helper to convert variable data to config
++  Status = gHiiConfigRouting->BlockToConfig (
++                                gHiiConfigRouting,
++                                Request,
++                                VariableOption,
++                                DataSize,
++                                Results,
++                                Progress
++                                );
++  ASSERT_EFI_ERROR (Status);
++
++  FreePool (VariableName);
++  if (VariableOption != NULL) {
++    FreePool (VariableOption);
++  }
++
++  return Status;
++}
++
++/**
++  This function processes the results of changes in configuration.
++
++
++  @param This            Points to the EFI_HII_CONFIG_ACCESS_PROTOCOL.
++  @param Configuration   A null-terminated Unicode string in <ConfigResp> format.
++  @param Progress        A pointer to a string filled in with the offset of the most
++                         recent '&' before the first failing name/value pair (or the
++                         beginning of the string if the failure is in the first
++                         name/value pair) or the terminating NULL if all was successful.
++
++  @retval  EFI_SUCCESS            The Results is processed successfully.
++  @retval  EFI_INVALID_PARAMETER  Configuration is NULL.
++  @retval  EFI_NOT_FOUND          Routing data doesn't match any storage in this driver.
++
++**/
++EFI_STATUS
++EFIAPI
++SetupMenuRouteConfig (
++  IN  CONST EFI_HII_CONFIG_ACCESS_PROTOCOL   *This,
++  IN  CONST EFI_STRING                       Configuration,
++  OUT EFI_STRING                             *Progress
++  )
++{
++  CHAR16      *VariableName;
++  VOID        *VariableOption;
++  UINTN       DataSize;
++  UINT32      Attributes;
++  EFI_STATUS  Status;
++  UINTN       TempDataSize;
++
++  if ((Configuration == NULL) || (Progress == NULL)) {
++    return EFI_INVALID_PARAMETER;
++  }
++
++  *Progress = Configuration;
++
++  // Get variable
++  VariableName = ConvertHiiConfigStringToVariableString (Configuration);
++  Status = GetVariable3 (
++             VariableName,
++             &gEficorebootNvDataGuid,
++             &VariableOption,
++             &DataSize,
++             &Attributes
++             );
++  ASSERT_EFI_ERROR (Status);
++
++  // Use HII helper to convert updated config to variable data
++  TempDataSize = DataSize;
++  Status = gHiiConfigRouting->ConfigToBlock (
++                                gHiiConfigRouting,
++                                Configuration,
++                                VariableOption,
++                                &TempDataSize,
++                                Progress
++                                );
++  ASSERT_EFI_ERROR (Status);
++
++  // Set variable
++  Status = gRT->SetVariable (
++                  VariableName,
++                  &gEficorebootNvDataGuid,
++                  Attributes,
++                  DataSize,
++                  VariableOption
++                  );
++  if (Status == EFI_WRITE_PROTECTED) {
++    Status = EFI_SUCCESS;
++  }
++
++  ASSERT_EFI_ERROR (Status);
++
++  FreePool (VariableName);
++  if (VariableOption != NULL) {
++    FreePool (VariableOption);
++  }
++
++  return Status;
++}
++
++/**
++  This function is invoked if user selected a interactive opcode from Setup Menu
++  Formset. If user set VBIOS, the new value is saved to EFI variable.
++
++  @param This            Points to the EFI_HII_CONFIG_ACCESS_PROTOCOL.
++  @param Action          Specifies the type of action taken by the browser.
++  @param QuestionId      A unique value which is sent to the original exporting driver
++                         so that it can identify the type of data to expect.
++  @param Type            The type of value for the question.
++  @param Value           A pointer to the data being sent to the original exporting driver.
++  @param ActionRequest   On return, points to the action requested by the callback function.
++
++  @retval  EFI_SUCCESS           The callback successfully handled the action.
++  @retval  EFI_INVALID_PARAMETER The setup browser call this function with invalid parameters.
++
++**/
++EFI_STATUS
++EFIAPI
++SetupMenuCallback (
++  IN  CONST EFI_HII_CONFIG_ACCESS_PROTOCOL   *This,
++  IN  EFI_BROWSER_ACTION                     Action,
++  IN  EFI_QUESTION_ID                        QuestionId,
++  IN  UINT8                                  Type,
++  IN  EFI_IFR_TYPE_VALUE                     *Value,
++  OUT EFI_BROWSER_ACTION_REQUEST             *ActionRequest
++  )
++{
++  return EFI_SUCCESS;
++}
+diff --git a/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuNVDataStruc.h b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuNVDataStruc.h
+new file mode 100644
+index 0000000000..1e3b2a80e1
+--- /dev/null
++++ b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuNVDataStruc.h
+@@ -0,0 +1,22 @@
++/** @file
++  A Setup Menu for configuring boot options defined by bootloader CFR.
++
++  Copyright (c) 2023, 9elements GmbH.<BR>
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++
++**/
++
++#ifndef _SETUPMENUNVDATASTRUC_H_
++#define _SETUPMENUNVDATASTRUC_H_
++
++#define SETUP_MENU_FORMSET_GUID \
++  { \
++    0x93E6FCD9, 0x8E17, 0x43DF, { 0xB7, 0xF0, 0x91, 0x3E, 0x58, 0xB1, 0xA7, 0x89 } \
++  }
++
++#define SETUP_MENU_FORM_ID   0x0001
++#define LABEL_RT_COMP_START  0x0001
++#define CFR_COMPONENT_START  0x1000
++#define LABEL_RT_COMP_END    0xefff
++
++#endif
+diff --git a/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuStrings.uni b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuStrings.uni
+new file mode 100644
+index 0000000000..708e224e5f
+--- /dev/null
++++ b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuStrings.uni
+@@ -0,0 +1,20 @@
++///** @file
++//  String definitions for the CFR Setup Menu.
++//**/
++
++#langdef   en-US "English"
++#langdef   fr-FR "Français"
++
++#string STR_CFR_MENU_TITLE  #language en-US  "Platform Setup Menu"
++                            #language fr-FR  "Platform Setup Menu"
++#string STR_CFR_MENU_HELP   #language en-US  "This menu lets you configure the bootloader options"
++                            #language fr-FR  "This menu lets you configure the bootloader options"
++#string STR_EMPTY_STRING    #language en-US  ""
++                            #language fr-FR  ""
++#string STR_INVALID_STRING  #language en-US  "INVALID"
++                            #language fr-FR  "INVALID"
++
++#string STR_BOOL_ENABLED    #language en-US  "Enabled"
++                            #language fr-FR  "Enabled"
++#string STR_BOOL_DISABLED   #language en-US  "Disabled"
++                            #language fr-FR  "Disabled"
+diff --git a/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuVfr.Vfr b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuVfr.Vfr
+new file mode 100644
+index 0000000000..725c7682be
+--- /dev/null
++++ b/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuVfr.Vfr
+@@ -0,0 +1,31 @@
++/** @file
++  Setup Menu formset.
++
++  Copyright (c) 2023, 9elements GmbH.<BR>
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++
++**/
++
++#include <Uefi/UefiMultiPhase.h>
++#include <Guid/HiiPlatformSetupFormset.h>
++#include "SetupMenuNVDataStruc.h"
++
++formset
++  guid      = SETUP_MENU_FORMSET_GUID,
++  title     = STRING_TOKEN(STR_CFR_MENU_TITLE),
++  help      = STRING_TOKEN(STR_CFR_MENU_HELP),
++  classguid = EFI_HII_PLATFORM_SETUP_FORMSET_GUID,
++
++  form formid = SETUP_MENU_FORM_ID,
++    title = STRING_TOKEN(STR_CFR_MENU_TITLE);
++
++    /**
++      Sections for runtime components
++
++    **/
++    label LABEL_RT_COMP_START;
++    label LABEL_RT_COMP_END;
++
++  endform;
++
++endformset;
+diff --git a/UefiPayloadPkg/Include/Coreboot.h b/UefiPayloadPkg/Include/Coreboot.h
+index 4d0d2cc1e4..aad2a6074c 100644
+--- a/UefiPayloadPkg/Include/Coreboot.h
++++ b/UefiPayloadPkg/Include/Coreboot.h
+@@ -291,6 +291,15 @@ struct cb_range {
+   UINT32    range_size;
+ } __attribute__ ((packed));
+ 
++#define CB_TAG_CFR_ROOT  0x0047
++struct cb_cfr {
++  UINT32 tag;
++  UINT32 size;
++  UINT32 version;
++  UINT32 checksum;  /* Of the following data only; excludes these 3 fields */
++  /* CFR_FORM forms[] */
++};
++
+ /* Helpful macros */
+ 
+ #define MEM_RANGE_COUNT(_rec) \
+diff --git a/UefiPayloadPkg/Include/Guid/CfrSetupMenuGuid.h b/UefiPayloadPkg/Include/Guid/CfrSetupMenuGuid.h
+new file mode 100644
+index 0000000000..5700756813
+--- /dev/null
++++ b/UefiPayloadPkg/Include/Guid/CfrSetupMenuGuid.h
+@@ -0,0 +1,153 @@
++/** @file
++  This file defines the hob structure for bootloader's CFR option menu.
++
++  Copyright (c) 2023, 9elements GmbH. All rights reserved.<BR>
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++
++**/
++
++#ifndef __CFR_SETUP_MENU_GUID_H__
++#define __CFR_SETUP_MENU_GUID_H__
++
++#define CB_CFR_VERSION 0x00000000
++
++///
++/// CFR options form GUID
++///
++extern EFI_GUID gEfiCfrSetupMenuFormGuid;
++
++/*
++ * The following tags are for CFR (Cursed Form Representation) entries.
++ *
++ * CFR records form a tree structure. The size of a record includes
++ * the size of its own fields plus the size of all children records.
++ * CFR tags can appear multiple times except for `LB_TAG_CFR` which
++ * is used for the root record.
++ *
++ * The following structures have comments that describe the supported
++ * children records. These comments cannot be replaced with code! The
++ * structures are variable-length, so the offsets won't be valid most
++ * of the time. Besides, the implementation uses `sizeof()` to obtain
++ * the size of the "record header" (the fixed-length members); adding
++ * the children structures as struct members will increase the length
++ * returned by `sizeof()`, which complicates things for zero reason.
++ *
++ * TODO: "This should be documentation instead."
++ */
++enum cfr_option_flags {
++  CFR_OPTFLAG_READONLY  = 1 << 0,
++  CFR_OPTFLAG_INACTIVE  = 1 << 1,
++  CFR_OPTFLAG_SUPPRESS  = 1 << 2,
++  CFR_OPTFLAG_VOLATILE  = 1 << 3,
++  CFR_OPTFLAG_RUNTIME   = 1 << 4,
++};
++
++#define CB_TAG_CFR_VARCHAR_OPT_NAME     0x0007
++#define CB_TAG_CFR_VARCHAR_UI_NAME      0x0008
++#define CB_TAG_CFR_VARCHAR_UI_HELPTEXT  0x0009
++#define CB_TAG_CFR_VARCHAR_DEF_VALUE    0x000a
++#define CB_TAG_CFR_DEP_VALUES           0x000c
++#pragma pack (1)
++typedef struct {
++  UINT32  tag;          /*
++                         * CFR_TAG_VARCHAR_OPT_NAME, CFR_TAG_VARCHAR_UI_NAME,
++                         * CFR_TAG_VARCHAR_UI_HELPTEXT, CFR_TAG_VARCHAR_DEF_VALUE
++                         * or CFR_TAG_DEP_VALUES
++                         */
++  UINT32  size;         /* Length of the entire structure */
++  UINT32  data_length;  /* Length of data, including NULL terminator for strings */
++  UINT8   data[];
++} CFR_VARBINARY;
++
++#define CB_TAG_CFR_ENUM_VALUE  0x0002
++typedef struct {
++  UINT32          tag;      /* CFR_TAG_ENUM_VALUE */
++  UINT32          size;
++  UINT32          value;
++  /*
++   * CFR_UI_NAME  ui_name
++   */
++} CFR_ENUM_VALUE;
++
++enum cfr_numeric_option_display_flags {
++  CFR_NUM_OPT_DISPFLAG_HEX  = 1 << 0,
++};
++
++#define CB_TAG_CFR_OPTION_ENUM    0x0003
++#define CB_TAG_CFR_OPTION_NUMBER  0x0004
++#define CB_TAG_CFR_OPTION_BOOL    0x0005
++typedef struct {
++  UINT32                      tag;            /*
++                                               * CFR_TAG_OPTION_ENUM, CFR_TAG_OPTION_NUMBER or
++                                               * CFR_TAG_OPTION_BOOL
++                                               */
++  UINT32                      size;
++  UINT64                      object_id;      /* Unique ID */
++  UINT64                      dependency_id;  /* Dependent object ID, or 0 */
++  UINT32                      flags;          /* enum cfr_option_flags */
++  UINT32                      default_value;
++  UINT32                      min;
++  UINT32                      max;
++  UINT32                      step;
++  UINT32                      display_flags;  /* enum cfr_numeric_option_display_flags */
++  /*
++   * CFR_VARCHAR_OPT_NAME     opt_name
++   * CFR_VARCHAR_UI_NAME      ui_name
++   * CFR_VARCHAR_UI_HELPTEXT  ui_helptext (Optional)
++   * CFR_DEP_VALUES           dependency_values (Optional)
++   * CFR_ENUM_VALUE           enum_values[]
++   */
++} CFR_OPTION_NUMERIC;
++
++#define CB_TAG_CFR_OPTION_VARCHAR  0x0006
++typedef struct {
++  UINT32              tag;            /* CFR_OPTION_VARCHAR */
++  UINT32              size;
++  UINT64              object_id;      /* Unique ID */
++  UINT64              dependency_id;  /* Dependent object ID, or 0 */
++  UINT32              flags;          /* enum cfr_option_flags */
++  /*
++   * CFR_OPT_NAME     opt_name
++   * CFR_UI_NAME      ui_name
++   * CFR_UI_HELPTEXT  ui_helptext (Optional)
++   * CFR_DEP_VALUES   dependency_values (Optional)
++   * CFR_VARCHAR      default_value
++   */
++} CFR_OPTION_VARCHAR;
++
++/*
++ * A CFR option comment is roughly equivalent to a Kconfig comment.
++ * Option comments are *NOT* string options (see CFR_OPTION_VARCHAR
++ * instead) but they're considered an option for simplicity's sake.
++ */
++#define CB_TAG_CFR_OPTION_COMMENT  0x000b
++typedef struct {
++  UINT32              tag;              /* CFR_OPTION_COMMENT */
++  UINT32              size;
++  UINT64              object_id;        /* Unique ID */
++  UINT64              dependency_id;    /* Dependent object ID, or 0 */
++  UINT32              flags;            /* enum cfr_option_flags */
++  /*
++   * CFR_UI_NAME      ui_name
++   * CFR_UI_HELPTEXT  ui_helptext (Optional)
++   * CFR_DEP_VALUES   dependency_values (Optional)
++   */
++} CFR_OPTION_COMMENT;
++
++/* CFR forms are considered options as they can be nested inside other forms */
++#define CB_TAG_CFR_OPTION_FORM  0x0001
++typedef struct {
++  UINT32                tag;              /* CFR_OPTION_FORM */
++  UINT32                size;
++  UINT64                object_id;        /* Unique ID */
++  UINT64                dependency_id;    /* Dependent object ID, or 0 */
++  UINT32                flags;            /* enum cfr_option_flags */
++  /*
++   * CFR_UI_NAME        ui_name
++   * CFR_DEP_VALUES     dependency_values (Optional)
++   * <T in CFR_OPTION>  options[]
++   */
++} CFR_OPTION_FORM;
++#pragma pack ()
++
++#endif // __CFR_SETUP_MENU_GUID_H__
+diff --git a/UefiPayloadPkg/Include/Library/CfrHelpersLib.h b/UefiPayloadPkg/Include/Library/CfrHelpersLib.h
+new file mode 100644
+index 0000000000..e05268e3f2
+--- /dev/null
++++ b/UefiPayloadPkg/Include/Library/CfrHelpersLib.h
+@@ -0,0 +1,53 @@
++/** @file
++  Contains helper functions for working with CFR.
++
++  Copyright (c) 2023, 9elements GmbH.<BR>
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++
++**/
++
++#ifndef _CFR_HELPERS_LIB_H_
++#define _CFR_HELPERS_LIB_H_
++
++#include <Uefi/UefiBaseType.h>
++#include <Uefi/UefiMultiPhase.h>
++#include <Pi/PiMultiPhase.h>
++#include <Guid/CfrSetupMenuGuid.h>
++
++/**
++  CFR_VARBINARY records are variable-length, so they aren't formal fields.
++  Implement this handling by returning the struct at this offset.
++
++  By incrementing the offset, this function behaves like a queue.
++  Optional fields handled by returning NULL immediately.
++
++**/
++CFR_VARBINARY *
++EFIAPI
++CfrExtractVarBinary (
++  IN     UINT8   *Buffer,
++  IN OUT UINTN   *Offset,
++  IN     UINT32  TargetTag
++  );
++
++/**
++  Return pointers into a buffer with the requested option's default value and size.
++  This may be used by code that needs CFR defaults before the full CFR driver can write variables.
++
++  TODO: Consider returning pools instead, caller to free.
++
++  @retval EFI_SUCCESS            The default value is found.
++  @retval EFI_INVALID_PARAMETER  The function parameters are invalid.
++  @retval EFI_NOT_FOUND          The option cannot be found, or type doesn't have default values.
++
++**/
++EFI_STATUS
++EFIAPI
++CfrOptionGetDefaultValue (
++  IN     CHAR8  *FormName            OPTIONAL,
++  IN     CHAR8  *OptionName,
++  IN OUT VOID   **DefaultValueData,
++  IN OUT UINTN  *DefaultValueLength  OPTIONAL
++  );
++
++#endif
+diff --git a/UefiPayloadPkg/Library/CbParseLib/CbParseLib.c b/UefiPayloadPkg/Library/CbParseLib/CbParseLib.c
+index 0f6d1d506f..614beeb454 100644
+--- a/UefiPayloadPkg/Library/CbParseLib/CbParseLib.c
++++ b/UefiPayloadPkg/Library/CbParseLib/CbParseLib.c
+@@ -7,7 +7,9 @@
+ 
+ **/
+ 
++#include <PiPei.h>
+ #include <Uefi/UefiBaseType.h>
++#include <Library/HobLib.h>
+ #include <Library/BaseLib.h>
+ #include <Library/BaseMemoryLib.h>
+ #include <Library/DebugLib.h>
+@@ -18,6 +20,7 @@
+ #include <Library/SmmStoreParseLib.h>
+ #include <IndustryStandard/Acpi.h>
+ #include <Coreboot.h>
++#include <Guid/CfrSetupMenuGuid.h>
+ 
+ /**
+   Convert a packed value from cbuint64 to a UINT64 value.
+@@ -75,6 +78,43 @@ CbCheckSum16 (
+   return (UINT16)((~Sum) & 0xFFFF);
+ }
+ 
++/**
++  Coreboot implements a CRC32 checksum which differs from the one in EDK2. This function
++  calculates the CRC32 checksum of a given buffer with the coreboot implementation.
++
++  @param  Buffer      The pointer to the buffer of which to calculate the CRC32.
++  @param  Length      The size, in bytes, of Buffer.
++
++  @return Crc         The CRC32 checksum of Buffer.
++
++**/
++UINT32
++CbCalculateCrc32 (
++  IN  VOID   *Buffer,
++  IN  UINTN  Length
++  )
++{
++  UINT32  Crc;
++  UINT8   *Ptr;
++  UINTN   Idx;
++  UINTN   BitIdx;
++
++  Crc = 0;
++  for (Idx = 0, Ptr = Buffer; Idx < Length; Idx++, Ptr++) {
++    Crc ^= (UINT32)*Ptr << 24;
++
++    for (BitIdx = 0; BitIdx < 8; BitIdx++) {
++      if ((Crc & 0x80000000UL) != 0) {
++        Crc = ((Crc << 1) ^ 0x04C11DB7UL);
++      } else {
++        Crc <<= 1;
++      }
++    }
++  }
++
++  return Crc;
++}
++
+ /**
+   Check the coreboot table if it is valid.
+ 
+@@ -584,9 +624,11 @@ ParseGfxDeviceInfo (
+ /**
+   Parse and handle the misc info provided by bootloader
+ 
+-  @retval RETURN_SUCCESS           The misc information was parsed successfully.
+-  @retval RETURN_NOT_FOUND         Could not find required misc info.
+-  @retval RETURN_OUT_OF_RESOURCES  Insufficant memory space.
++  @retval RETURN_SUCCESS               The misc information was parsed successfully.
++  @retval RETURN_INCOMPATIBLE_VERSION  The provided CFR data does not match the expected version.
++  @retval RETURN_CRC_ERROR             The calculated checksum does not match the supplied one.
++  @retval RETURN_NOT_FOUND             Could not find required misc info.
++  @retval RETURN_OUT_OF_RESOURCES      Insufficant memory space.
+ 
+ **/
+ RETURN_STATUS
+@@ -595,6 +637,70 @@ ParseMiscInfo (
+   VOID
+   )
+ {
++  struct cb_cfr                         *CbCfrSetupMenu;
++  UINT32                                CfrCalculatedChecksum;
++  UINTN                                 ProcessedLength;
++  CFR_OPTION_FORM                       *CbCfrOuterFormOffset;
++  CFR_OPTION_FORM                       *CfrSetupMenuForm;
++  CFR_VARBINARY                         *CfrFormName;
++
++  //
++  // CFR has several CB tags, though these are nested structures,
++  // not for individual table-to-HOB conversion
++  //
++  CbCfrSetupMenu = FindCbTag (CB_TAG_CFR_ROOT);
++  if (CbCfrSetupMenu == NULL) {
++    DEBUG ((DEBUG_ERROR, "CFR Tag not found in cbtables\n"));
++    return RETURN_NOT_FOUND;
++  }
++
++  if (CbCfrSetupMenu->version != CB_CFR_VERSION) {
++    DEBUG ((DEBUG_WARN, "CFR: version mismatch! (expected %d, got %d)\n", CB_CFR_VERSION, CbCfrSetupMenu->version));
++    return RETURN_INCOMPATIBLE_VERSION;
++  }
++
++  //
++  // Checksum over CFR_FORM[] data  -- CbCfrSetupMenu header excluded
++  //
++  CfrCalculatedChecksum = CbCalculateCrc32 (CbCfrSetupMenu + 1, CbCfrSetupMenu->size - sizeof(*CbCfrSetupMenu));
++
++  if (CfrCalculatedChecksum != CbCfrSetupMenu->checksum) {
++    DEBUG ((DEBUG_WARN, "CFR: Calculated CRC32 0x%x does not match stored CRC32 0x%x!\n", CfrCalculatedChecksum, CbCfrSetupMenu->checksum));
++    return RETURN_CRC_ERROR;
++  }
++
++  ProcessedLength = sizeof (struct cb_cfr);
++
++  //
++  // Copy each form to HOB; TODO: This creates duplicate, copy pointer?
++  //
++  while (ProcessedLength < CbCfrSetupMenu->size) {
++    CbCfrOuterFormOffset = (CFR_OPTION_FORM *)((UINT8 *)CbCfrSetupMenu + ProcessedLength);
++    if (CbCfrOuterFormOffset->tag != CB_TAG_CFR_OPTION_FORM) {
++      DEBUG ((DEBUG_ERROR, "CFR Tag mismatch: 0x%x vs 0x%x\n", CbCfrOuterFormOffset->tag, CB_TAG_CFR_OPTION_FORM));
++      return RETURN_NOT_FOUND;
++    }
++    CfrSetupMenuForm = BuildGuidDataHob (
++                          &gEfiCfrSetupMenuFormGuid,
++                          CbCfrOuterFormOffset,
++                          CbCfrOuterFormOffset->size
++                          );
++    if (CfrSetupMenuForm == NULL) {
++      break;
++    }
++    ASSERT (CfrSetupMenuForm->tag == CB_TAG_CFR_OPTION_FORM);
++
++    CfrFormName = (CFR_VARBINARY *)((UINT8 *)CfrSetupMenuForm + sizeof (CFR_OPTION_FORM));
++    DEBUG ((
++      DEBUG_INFO,
++      "CFR: Found form \"%a\", size 0x%x bytes\n",
++      CfrFormName->data,
++      CfrSetupMenuForm->size
++      ));
++
++    ProcessedLength += CfrSetupMenuForm->size;
++  }
++
+   return RETURN_SUCCESS;
+ }
+ 
+diff --git a/UefiPayloadPkg/Library/CbParseLib/CbParseLib.inf b/UefiPayloadPkg/Library/CbParseLib/CbParseLib.inf
+index 7be238c850..282da61428 100644
+--- a/UefiPayloadPkg/Library/CbParseLib/CbParseLib.inf
++++ b/UefiPayloadPkg/Library/CbParseLib/CbParseLib.inf
+@@ -35,6 +35,10 @@
+   DebugLib
+   PcdLib
+   PrintLib
++  HobLib
++
++[Guids]
++  gEfiCfrSetupMenuFormGuid
+ 
+ [Pcd]
+   gUefiPayloadPkgTokenSpaceGuid.PcdBootloaderParameter
+diff --git a/UefiPayloadPkg/Library/CfrHelpersLib/CfrHelpersLib.c b/UefiPayloadPkg/Library/CfrHelpersLib/CfrHelpersLib.c
+new file mode 100644
+index 0000000000..f8f4271808
+--- /dev/null
++++ b/UefiPayloadPkg/Library/CfrHelpersLib/CfrHelpersLib.c
+@@ -0,0 +1,170 @@
++/** @file
++  Contains helper functions for working with CFR.
++
++  Copyright (c) 2023, 9elements GmbH.<BR>
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++
++**/
++
++#include <Uefi/UefiBaseType.h>
++#include <Uefi/UefiMultiPhase.h>
++#include <Pi/PiMultiPhase.h>
++#include <Library/BaseLib.h>
++#include <Library/CfrHelpersLib.h>
++#include <Library/DebugLib.h>
++#include <Library/HobLib.h>
++#include <Guid/CfrSetupMenuGuid.h>
++
++/**
++  CFR_VARBINARY records are variable-length, so they aren't formal fields.
++  Implement this handling by returning the struct at this offset.
++
++  By incrementing the offset, this function behaves like a queue.
++  Optional fields handled by returning NULL immediately.
++
++**/
++CFR_VARBINARY *
++EFIAPI
++CfrExtractVarBinary (
++  IN     UINT8   *Buffer,
++  IN OUT UINTN   *Offset,
++  IN     UINT32  TargetTag
++  )
++{
++  CFR_VARBINARY  *CfrVarBinary;
++
++  CfrVarBinary = (CFR_VARBINARY *)(Buffer + *Offset);
++  if (CfrVarBinary->tag != TargetTag) {
++    return NULL;
++  }
++
++  *Offset += CfrVarBinary->size;
++
++  return CfrVarBinary;
++}
++
++/**
++  Return pointers into a buffer with the requested option's default value and size.
++  This may be used by code that needs CFR defaults before the full CFR driver can write variables.
++
++  TODO: Consider returning pools instead, caller to free.
++
++  @retval EFI_SUCCESS            The default value is found.
++  @retval EFI_INVALID_PARAMETER  The function parameters are invalid.
++  @retval EFI_NOT_FOUND          The option cannot be found, or type doesn't have default values.
++
++**/
++EFI_STATUS
++EFIAPI
++CfrOptionGetDefaultValue (
++  IN     CHAR8  *FormName            OPTIONAL,
++  IN     CHAR8  *OptionName,
++  IN OUT VOID   **DefaultValueData,
++  IN OUT UINTN  *DefaultValueLength  OPTIONAL
++  )
++{
++  EFI_HOB_GUID_TYPE  *GuidHob;
++  CFR_OPTION_FORM    *CfrFormHob;
++  UINTN              ProcessedLength;
++  UINTN              OptionProcessedLength;
++  CFR_VARBINARY      *CfrFormName;
++  CFR_OPTION_FORM    *CfrFormData;
++  CFR_VARBINARY      *CfrOptionName;
++  CFR_VARBINARY      *TempUiName;
++  CFR_VARBINARY      *TempHelpText;
++  CFR_VARBINARY      *CfrDefaultValue;
++
++  if ((OptionName == NULL) || (DefaultValueData == NULL)) {
++    return EFI_INVALID_PARAMETER;
++  }
++
++  //
++  // Begin processing a form HOB
++  //
++  GuidHob = GetFirstGuidHob (&gEfiCfrSetupMenuFormGuid);
++  while (GuidHob != NULL) {
++    CfrFormHob = GET_GUID_HOB_DATA (GuidHob);
++
++    ProcessedLength = sizeof (CFR_OPTION_FORM);
++    CfrFormName = CfrExtractVarBinary ((UINT8 *)CfrFormHob, &ProcessedLength, CB_TAG_CFR_VARCHAR_UI_NAME);
++    ASSERT (CfrFormName != NULL);
++
++    //
++    // Different form requested, skip this
++    //
++    if ((FormName != NULL) && (AsciiStrCmp (FormName, (CHAR8 *)CfrFormName->data) != 0)) {
++      GuidHob = GetNextGuidHob (&gEfiCfrSetupMenuFormGuid, GET_NEXT_HOB (GuidHob));
++      continue;
++    }
++
++    //
++    // Process form tree
++    //
++    while (ProcessedLength < CfrFormHob->size) {
++      CfrFormData = (CFR_OPTION_FORM *)((UINT8 *)CfrFormHob + ProcessedLength);
++
++      switch (CfrFormData->tag) {
++        case CB_TAG_CFR_OPTION_FORM:
++          // Processing nested forms, don't advance by `size`
++          ProcessedLength += sizeof (CFR_OPTION_FORM);
++          CfrFormName = CfrExtractVarBinary ((UINT8 *)CfrFormHob, &ProcessedLength, CB_TAG_CFR_VARCHAR_UI_NAME);
++          ASSERT (CfrFormName != NULL);
++
++          // Forms do not have default values
++          if (AsciiStrCmp (OptionName, (CHAR8 *)CfrFormName->data) == 0) {
++            return EFI_NOT_FOUND;
++          }
++          break;
++        case CB_TAG_CFR_OPTION_ENUM:
++        case CB_TAG_CFR_OPTION_NUMBER:
++        case CB_TAG_CFR_OPTION_BOOL:
++          OptionProcessedLength = sizeof (CFR_OPTION_NUMERIC);
++          CfrOptionName = CfrExtractVarBinary ((UINT8 *)CfrFormData, &OptionProcessedLength, CB_TAG_CFR_VARCHAR_OPT_NAME);
++          ASSERT (CfrOptionName != NULL);
++
++          if (AsciiStrCmp (OptionName, (CHAR8 *)CfrOptionName->data) == 0) {
++            *DefaultValueData = &((CFR_OPTION_NUMERIC *)CfrFormData)->default_value;
++            if (DefaultValueLength != NULL) {
++              *DefaultValueLength = sizeof (((CFR_OPTION_NUMERIC *)CfrFormData)->default_value);
++            }
++            return EFI_SUCCESS;
++          }
++          ProcessedLength += CfrFormData->size;
++          break;
++        case CB_TAG_CFR_OPTION_VARCHAR:
++          // Currently required to remove intermediate VARBINARY structs of UI data
++          OptionProcessedLength = sizeof (CFR_OPTION_VARCHAR);
++          CfrOptionName = CfrExtractVarBinary ((UINT8 *)CfrFormData, &OptionProcessedLength, CB_TAG_CFR_VARCHAR_OPT_NAME);
++          ASSERT (CfrOptionName != NULL);
++
++          TempUiName = CfrExtractVarBinary ((UINT8 *)CfrFormData, &OptionProcessedLength, CB_TAG_CFR_VARCHAR_UI_NAME);
++          ASSERT (TempUiName != NULL);
++          TempHelpText = CfrExtractVarBinary ((UINT8 *)CfrFormData, &OptionProcessedLength, CB_TAG_CFR_VARCHAR_UI_HELPTEXT);
++          if (TempHelpText != NULL) {
++            ASSERT (TempHelpText->tag == CB_TAG_CFR_VARCHAR_UI_HELPTEXT);
++          }
++
++          CfrDefaultValue = CfrExtractVarBinary ((UINT8 *)CfrFormData, &OptionProcessedLength, CB_TAG_CFR_VARCHAR_DEF_VALUE);
++          ASSERT (CfrDefaultValue != NULL);
++
++          if (AsciiStrCmp (OptionName, (CHAR8 *)CfrOptionName->data) == 0) {
++            *DefaultValueData = CfrDefaultValue->data;
++            if (DefaultValueLength != NULL) {
++              *DefaultValueLength = CfrDefaultValue->data_length;
++            }
++            return EFI_SUCCESS;
++          }
++          ProcessedLength += CfrFormData->size;
++          break;
++        case CB_TAG_CFR_OPTION_COMMENT:
++        default:
++          ProcessedLength += CfrFormData->size;
++          break;
++      }
++    }
++
++    GuidHob = GetNextGuidHob (&gEfiCfrSetupMenuFormGuid, GET_NEXT_HOB (GuidHob));
++  }
++
++  return EFI_NOT_FOUND;
++}
+diff --git a/UefiPayloadPkg/Library/CfrHelpersLib/CfrHelpersLib.inf b/UefiPayloadPkg/Library/CfrHelpersLib/CfrHelpersLib.inf
+new file mode 100644
+index 0000000000..dce88b4cf0
+--- /dev/null
++++ b/UefiPayloadPkg/Library/CfrHelpersLib/CfrHelpersLib.inf
+@@ -0,0 +1,30 @@
++## @file
++#  Contains helper functions for working with CFR.
++#
++#  Copyright (c) 2023, 9elements GmbH.<BR>
++#  SPDX-License-Identifier: BSD-2-Clause-Patent
++#
++##
++
++[Defines]
++  INF_VERSION                    = 0x00010005
++  BASE_NAME                      = CfrHelpersLib
++  FILE_GUID                      = 4165BB9B-54BF-40B7-AD56-D51D1D90FFB7
++  MODULE_TYPE                    = BASE
++  VERSION_STRING                 = 1.0
++  LIBRARY_CLASS                  = CfrHelpersLib
++
++[Sources]
++  CfrHelpersLib.c
++
++[Packages]
++  MdePkg/MdePkg.dec
++  UefiPayloadPkg/UefiPayloadPkg.dec
++
++[LibraryClasses]
++  BaseLib
++  DebugLib
++  HobLib
++
++[Guids]
++  gEfiCfrSetupMenuFormGuid
+diff --git a/UefiPayloadPkg/UefiPayloadPkg.dec b/UefiPayloadPkg/UefiPayloadPkg.dec
+index 2e13500729..0463b78281 100644
+--- a/UefiPayloadPkg/UefiPayloadPkg.dec
++++ b/UefiPayloadPkg/UefiPayloadPkg.dec
+@@ -21,6 +21,12 @@
+   PayloadEntryHelperLib|Include/Library/PayloadEntryHelperLib.h
+ 
+ [Guids]
++  # SMMSTORE for coreboot and EDK-2
++  gEficorebootNvDataGuid = { 0xceae4c1d, 0x335b, 0x4685, { 0xa4, 0xa0, 0xfc, 0x4a, 0x94, 0xee, 0xa0, 0x85 } }
++
++  # Bootloader option menu
++  gEfiCfrSetupMenuFormGuid = { 0xfbc3b1de, 0xd17c, 0x44de, { 0x98, 0x47, 0x2b, 0xbf, 0x9e, 0xfd, 0xbd, 0x8e } }
++
+   #
+   ## Defines the token space for the UEFI Payload Package PCDs.
+   #
+diff --git a/UefiPayloadPkg/UefiPayloadPkg.dsc b/UefiPayloadPkg/UefiPayloadPkg.dsc
+index f54cacc13c..7ddea151d4 100644
+--- a/UefiPayloadPkg/UefiPayloadPkg.dsc
++++ b/UefiPayloadPkg/UefiPayloadPkg.dsc
+@@ -357,6 +357,7 @@
+     BlParseLib|UefiPayloadPkg/Library/SblParseLib/SblParseLib.inf
+   !endif
+ !endif
++  CfrHelpersLib|UefiPayloadPkg/Library/CfrHelpersLib/CfrHelpersLib.inf
+ 
+   DebugLib|MdeModulePkg/Library/PeiDxeDebugLibReportStatusCode/PeiDxeDebugLibReportStatusCode.inf
+ !if $(LOCKBOX_SUPPORT) == TRUE
+@@ -991,6 +992,7 @@
+ !if $(BOOTSPLASH_IMAGE)
+   MdeModulePkg/Logo/LogoDxe.inf
+ !endif
++  UefiPayloadPkg/CfrSetupMenuDxe/CfrSetupMenuDxe.inf
+   MdeModulePkg/Application/UiApp/UiApp.inf {
+     <LibraryClasses>
+       NULL|MdeModulePkg/Library/DeviceManagerUiLib/DeviceManagerUiLib.inf
+diff --git a/UefiPayloadPkg/UefiPayloadPkg.fdf b/UefiPayloadPkg/UefiPayloadPkg.fdf
+index 28afae75dd..1e1df9e533 100644
+--- a/UefiPayloadPkg/UefiPayloadPkg.fdf
++++ b/UefiPayloadPkg/UefiPayloadPkg.fdf
+@@ -348,6 +348,7 @@ INF  MdeModulePkg/Universal/Acpi/BootGraphicsResourceTableDxe/BootGraphicsResour
+ 
+ !if $(UNIVERSAL_PAYLOAD) == FALSE
+ INF MdeModulePkg/Universal/BdsDxe/BdsDxe.inf
++INF UefiPayloadPkg/CfrSetupMenuDxe/CfrSetupMenuDxe.inf
+ INF RuleOverride = UI MdeModulePkg/Application/UiApp/UiApp.inf
+ INF MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
+ #
+-- 
+2.55.0
+

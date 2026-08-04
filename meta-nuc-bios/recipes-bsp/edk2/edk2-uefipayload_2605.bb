@@ -1,19 +1,26 @@
-SUMMARY = "EDK2 UefiPayloadPkg (MrChromebox fork) — UEFI payload for coreboot"
+SUMMARY = "EDK2 UefiPayloadPkg (upstream tianocore) — UEFI payload for coreboot"
 DESCRIPTION = "Builds UEFIPAYLOAD.fd, the UEFI environment coreboot jumps \
-into on the NUC5i7RYH, with the Redfish host-interface client stack compiled \
-in. Uses the MrChromebox edk2 fork -- the exact tree coreboot's own \
-payloads/external/edk2 machinery defaults to (EDK2_REPO_MRCHROMEBOX, branch \
-uefipayload_2605): unlike upstream tianocore it carries the coreboot \
-integration patches that matter here -- the CFR-driven SetupMenu (surfaces \
-the board port's fan-profile / power-on-after-AC / SATA / fTPM options), the \
-SMMSTORE variable driver wired as the EFI variable store, and the cbmem \
-console. \
+into on the NUC5i7RYH, with the Redfish host-interface stack and \
+edk2-redfish-client compiled in. \
+\
+This tracks upstream tianocore/edk2 rather than the MrChromebox fork \
+coreboot's payloads/external/edk2 machinery defaults to. The fork is exactly \
+edk2-stable202605 plus 103 commits and nothing behind it, so the delta is a \
+patch series, not a divergent tree: the eighteen of those commits this board \
+actually needs are carried in SRC_URI below and cherry-pick onto master \
+without conflict. See the patch headers for what each one is for. \
+\
+Moving to upstream is what makes RedfishClientPkg buildable. The GUIDs it \
+needs (gEdkIIRedfisEventRedfishInterfaceDisconnectionGuid and friends) are \
+declared by RedfishPkg.dec on master and by no stable tag through 202605 -- \
+including the one the fork sits on, whose RedfishPkg is byte-identical to \
+upstream's. It was never a fork problem. \
 \
 Building the payload here rather than inside coreboot's payloads/external \
 machinery is what makes NucRedfishPkg possible: its sources are staged into \
 the tree by do_configure, instead of having to patch a tree that coreboot \
 clones halfway through its own do_compile."
-HOMEPAGE = "https://github.com/mrchromebox/edk2"
+HOMEPAGE = "https://github.com/tianocore/edk2"
 LICENSE = "BSD-2-Clause-Patent"
 LIC_FILES_CHKSUM = "file://License.txt;md5=2b415520383f7964e96700ae12b4570a"
 
@@ -23,64 +30,78 @@ inherit deploy
 #
 #   edk2 (gitsm)          the payload itself. edk2 vendors its deps as
 #                         submodules (openssl for Secure Boot, brotli,
-#                         oniguruma, ...) -- same fetcher approach as
-#                         oe-core's ovmf.
+#                         oniguruma, jansson for RedfishPkg's JsonLib, ...) --
+#                         same fetcher approach as oe-core's ovmf.
 #   edk2-platforms        Features/Intel/**; coreboot puts nine of its
 #                         subdirectories on PACKAGES_PATH (mirrored below).
-# edk2-redfish-client (RedfishClientPkg) is intentionally absent.
-#
-# It is the BIOS *attribute-sync* feature layer -- BiosDxe, BootOptionDxe and
-# the JSON converters -- which sits on top of a working host interface. It is
-# not needed for initial sync (discovery + RestEx + the type 42 record), and
-# neither NucRedfishHostInterfaceLib nor RedfishConfigDriver depends on it:
-# both list only RedfishPkg in their [Packages].
-#
-# It also does not build against this tree. The MrChromebox fork tracks
-# UefiPayloadPkg, not RedfishPkg, so its RedfishPkg lags upstream edk2 badly
-# regardless of the fork's HEAD date (2026-07-12):
-#
-#   RedfishClientPkg/Library/RedfishEventLib/RedfishEventLib.inf(39):
-#     error 4000: Value of Guid [gEdkIIRedfisEventRedfishInterfaceDisconnectionGuid]
-#     is not found under [Guids] section
-#
-# That GUID is declared by upstream RedfishPkg.dec; this fork's copy has no
-# RedfishEvent GUIDs at all. Re-adding the client layer therefore needs a
-# matched pair -- either a newer RedfishPkg (rebase the fork, or overlay
-# upstream RedfishPkg onto it) or an edk2-redfish-client revision old enough to
-# match. Pick the pair deliberately rather than by AUTOREV.
-SRC_URI = "gitsm://github.com/mrchromebox/edk2.git;protocol=https;branch=uefipayload_2605;name=edk2;destsuffix=git \
+#                         Nothing here references it, but keeping it means the
+#                         two builds stay comparable.
+#   edk2-redfish-client   RedfishClientPkg: the feature layer above the host
+#                         interface -- BiosDxe, BootOptionDxe,
+#                         ComputerSystemDxe and the JSON converters.
+SRC_URI = "gitsm://github.com/tianocore/edk2.git;protocol=https;branch=master;name=edk2;destsuffix=git \
            git://github.com/tianocore/edk2-platforms.git;protocol=https;branch=master;name=platforms;destsuffix=edk2-platforms \
+           git://github.com/tianocore/edk2-redfish-client.git;protocol=https;branch=main;name=redfishclient;destsuffix=edk2-redfish-client \
            file://NucRedfishPkg \
            file://bootsplash.bmp \
            "
 
-# The Redfish wiring is two ordinary patches rather than the scripted anchored
-# insertions this recipe used to run at do_configure. Both trees are pinned by
-# SRCREV, so context diffs are stable, and `patch` already refuses to apply a
-# hunk it cannot place -- which was the one property the script was written for.
-# NucRedfishPkg itself is still staged by do_configure: it is a whole package
-# copied into the tree, not a modification of one.
-SRC_URI += "${@' '.join([ \
-    'file://0001-UefiPayloadPkg-wire-in-the-Redfish-host-interface-sta.patch', \
-    'file://0002-UsbNetwork-assume-media-on-a-point-to-point-gadget.patch', \
-    ]) if d.getVar('EDK2_REDFISH') == '1' else ''}"
+# 0001-0018: the MrChromebox commits this board needs, cherry-picked onto
+# upstream master. Each carries its original authorship and a
+# "(cherry picked from commit ...)" trailer. They fall into two groups --
+# coreboot/payload correctness (MTRR, root bridges from HOB, the framebuffer
+# BAR offset, SMMSTORE block alignment, uninitialised memory in the entry
+# point) and features this board is configured to use (CFR SetupMenu,
+# PRIORITIZE_INTERNAL, the BGRT logo position).
+#
+# 0019-0023: local. All five are applied unconditionally; what they add is
+# gated by DSC defines that default FALSE, so the -D flags below decide what is
+# actually built. Making the *patches* conditional instead would be fragile --
+# 0021, 0022 and 0023 edit regions 0020 creates or sits beside.
+SRC_URI += "${@' '.join('file://' + p for p in [ \
+    '0001-UefiCpuPkg-Disable-MTRR-programming-for-UefiPayloadP.patch', \
+    '0002-MdeModulePkg-Don-t-remove-rejected-PCI-devices.patch', \
+    '0003-UefiPayloadPkg-GraphicsOutputDxe-Allow-for-framebuff.patch', \
+    '0004-MdeModulePkg-UefiBootManagerLib-Add-Pcd-to-prioritiz.patch', \
+    '0005-UefiPayloadPkg-Hookup-Prioritize-Internal-build-opti.patch', \
+    '0006-MdeModulePkg-UefiBootManagerLib-Honor-PrioritizeInte.patch', \
+    '0007-MdeModulePkg-BootLogoLib-Add-option-to-follow-BGRT-s.patch', \
+    '0008-MdeModulePkg-Logo-Add-a-PCD-to-control-the-position-.patch', \
+    '0009-MdeModulePkg-FaultTolerantWrite-Don-t-check-for-bloc.patch', \
+    '0010-UefiPayloadPkg-Set-PcdCpuFeaturesInitOnS3Resume-to-F.patch', \
+    '0011-UefiPayloadPkg-Implement-CFR-support.patch', \
+    '0012-UefiCpuPkg-CpuDxe-Gate-EFI-Memory-Attribute-Protocol.patch', \
+    '0013-UefiPayloadPkg-SmmStoreLib-Support-64-bit-MMIO-store.patch', \
+    '0014-UefipayloadPkg-SmmStoreLib-Set-capabilities-for-stor.patch', \
+    '0015-UefiPayloadPkg-Library-CbParseLib-Populate-root-brid.patch', \
+    '0016-PcRtcEntry-Don-t-assert-if-RTC-init-fails.patch', \
+    '0017-UefiPayloadPkg-align-DXE-images-for-page-protections.patch', \
+    '0018-UefiPayloadEntry-Fix-use-of-uninitialized-memory.patch', \
+    '0019-UsbNetwork-assume-media-on-a-point-to-point-gadget.patch', \
+    '0020-UefiPayloadPkg-wire-in-the-Redfish-host-interface-st.patch', \
+    '0021-UefiPayloadPkg-give-the-onboard-NIC-a-UNDI-SNP-drive.patch', \
+    '0022-UefiPayloadPkg-wire-in-edk2-redfish-client-RedfishCl.patch', \
+    '0023-UefiPayloadPkg-give-NetworkPkg-the-protocol-producer.patch', \
+    ])}"
 
-# The LOM's UNDI/SNP driver. Tied to EDK2_IPXE because that is what builds and
-# stages the binary the FDF entry points at.
-SRC_URI += "${@'file://0003-UefiPayloadPkg-give-the-onboard-NIC-a-UNDI-SNP-driver.patch' if d.getVar('EDK2_IPXE') == '1' else ''}"
-
-# Branch head as of 2026-07-13. coreboot master defaults to this branch
-# (payloads/external/edk2/Kconfig: EDK2_TAG_OR_REV "origin/uefipayload_2605").
-SRCREV_edk2 = "2939f4969466bfe71722494e4cea5cbaa029c709"
-# Pinned, not AUTOREV: a floating revision makes the build non-reproducible
-# and silently changes what lands in the ROM. 2026-07-28 head.
+# All three pinned, not AUTOREV: a floating revision makes the build
+# non-reproducible and silently changes what lands in the ROM. The patch series
+# is generated against these exact trees, so `patch` refusing a hunk is the
+# signal that a bump needs review.
+# edk2 master head 2026-08-04.
+SRCREV_edk2 = "fa41c179db1f9fc21eb425f44b85a16262c806ca"
+# edk2-platforms head 2026-07-28.
 SRCREV_platforms = "75efd079fed9723db8ce02365233c03b2fdc3b92"
-SRCREV_FORMAT = "edk2_platforms"
+# edk2-redfish-client head 2026-08-04. It tracks edk2 master, which is the
+# whole reason this recipe does too.
+SRCREV_redfishclient = "92fabf8572c226cf180c62b1204380385a518db3"
+SRCREV_FORMAT = "edk2_platforms_redfishclient"
 
 PV = "2605+git${SRCPV}"
 
 S = "${WORKDIR}/git"
 EDK2_PLATFORMS_PATH = "${WORKDIR}/edk2-platforms"
+EDK2_REDFISH_CLIENT_PATH = "${WORKDIR}/edk2-redfish-client"
 
 COMPATIBLE_MACHINE = "nuc5i7ryh"
 
@@ -134,56 +155,62 @@ EDK2_GOP_FILE ??= ""
 # LOM, so without it a chainloaded iPXE snp.efi has no interface to boot from.
 #
 # EDK2_IPXE_APP additionally embeds the iPXE boot *application* and registers it
-# as a boot option. Off by default: it does not work on this board, and BDS
-# already offers the LOM as "PXEv4 (MAC:...)" via the driver above, which is
-# what actually chainloads.
+# as a boot option. Off, and unavailable: the FDF slot it used was a fork-only
+# addition, and BDS already offers the LOM as "PXEv4 (MAC:...)" via the driver
+# above, which is what actually chainloads.
 EDK2_IPXE ??= "1"
-EDK2_IPXE_APP ??= "0"
-EDK2_IPXE_OPTION_NAME ??= "iPXE"
+# The Redfish host interface (DSP0270) over the BMC's CDC-ECM gadget.
 EDK2_REDFISH ??= "1"
+# edk2-redfish-client on top of it. Requires EDK2_REDFISH.
+EDK2_REDFISH_CLIENT ??= "1"
 EDK2_CUSTOM_BUILD_PARAMS ??= ""
 
 # coreboot's nine-entry PACKAGES_PATH when CONFIG_EDK2_USE_EDK2_PLATFORMS=y,
 # plus the Redfish client tree. Order matters: edk2 itself must come first so
 # its MdePkg wins over any vendored copy in the other trees.
-EDK2_PACKAGES_PATH = "${S}:${EDK2_PLATFORMS_PATH}/Platform/Intel:${EDK2_PLATFORMS_PATH}/Silicon/Intel:${EDK2_PLATFORMS_PATH}/Features/Intel:${EDK2_PLATFORMS_PATH}/Features/Intel/Debugging:${EDK2_PLATFORMS_PATH}/Features/Intel/Network:${EDK2_PLATFORMS_PATH}/Features/Intel/OutOfBandManagement:${EDK2_PLATFORMS_PATH}/Features/Intel/PowerManagement:${EDK2_PLATFORMS_PATH}/Features/Intel/SystemInformation:${EDK2_PLATFORMS_PATH}/Features/Intel/UserInterface"
+EDK2_PACKAGES_PATH = "${S}:${EDK2_PLATFORMS_PATH}/Platform/Intel:${EDK2_PLATFORMS_PATH}/Silicon/Intel:${EDK2_PLATFORMS_PATH}/Features/Intel:${EDK2_PLATFORMS_PATH}/Features/Intel/Debugging:${EDK2_PLATFORMS_PATH}/Features/Intel/Network:${EDK2_PLATFORMS_PATH}/Features/Intel/OutOfBandManagement:${EDK2_PLATFORMS_PATH}/Features/Intel/PowerManagement:${EDK2_PLATFORMS_PATH}/Features/Intel/SystemInformation:${EDK2_PLATFORMS_PATH}/Features/Intel/UserInterface:${EDK2_REDFISH_CLIENT_PATH}"
 
 # --- EDK2 build defines -----------------------------------------------------
 # Mirrors coreboot payloads/external/edk2/Makefile for this board's Kconfig.
 # Broadwell-specific choices, each spelled out:
+#   BUILD_ARCH=X64              not a feature switch: it is interpolated into
+#                               OUTPUT_DIRECTORY (Build/UefiPayloadPkg$(...)),
+#                               which do_compile and do_deploy both read.
 #   CPU_TIMER_LIB_ENABLE=FALSE  Broadwell has no CPUID leaf 15h crystal clock;
 #                               the TSC-from-CPUID timer lib (Skylake+) must
 #                               stay off -- getting this wrong hangs the
 #                               payload.
 #   VARIABLE_SUPPORT=SMMSTORE   persistent EFI variables in the
 #                               SMMSTORE(PRESERVE) 0x80000 FMAP region the
-#                               board port lays out.
-#   TPM_ENABLE=FALSE            the ME PTT fTPM's CRB is at the non-standard
-#                               0xfed70000; edk2's TCG stack only probes
-#                               0xfed40000 and would find nothing. The OS gets
-#                               the TPM via the board port's ACPI TPM2 table.
+#                               board port lays out. Upstream carries the whole
+#                               SmmStoreLib/SmmStoreFvb stack; only the block
+#                               alignment and store-capability fixes are
+#                               patched in (0009, 0013, 0014).
 #   SERIAL off / CBMEM on       no UART is routed (NO_UART_ON_SUPERIO); read
 #                               the firmware console with `cbmem -c`.
-#   NETWORK_PXE_BOOT=TRUE       builds edk2's own PXE stack (UefiPxeBcDxe plus
-#                               Mnp/Arp/Dhcp4/Mtftp4). Without it nothing in the
-#                               payload creates a PXE boot option at all -- the
-#                               "PXEv4 (MAC:...)" entries that used to appear
-#                               were iPXE's own EFI_LOAD_FILE_PROTOCOL, not this
-#                               stack, and the one BDS picked failed with "Not
-#                               Found". iPXE is now only the UNDI/SNP provider
-#                               for the LOM (ipxe-intel.efidrv, built with
-#                               EFI_DOWNGRADE_UX so it offers no boot method of
-#                               its own), and edk2 owns the whole boot path.
-#                               Note the DSC also forces the Realtek and ASIX
-#                               UNDI blobs on with this define; they are inert
-#                               here but do occupy FV space.
+#   NETWORK_DRIVER_ENABLE=TRUE  the gate for the entire network stack: it is
+#                               what makes UefiPayloadPkg.dsc pull in
+#                               NetworkPkg/Network.dsc.inc, and therefore what
+#                               the Redfish and PXE blocks hang off. Drop it and
+#                               every other NETWORK_* flag below goes inert
+#                               *silently* -- no HTTP, no REST EX, no host
+#                               interface, and no build error.
+#   NETWORK_PXE_BOOT_ENABLE     edk2's own PXE stack (UefiPxeBcDxe plus
+#                               Mnp/Arp/Dhcp4/Mtftp4). Defaults TRUE inside
+#                               NetworkPkg; spelled out because this board
+#                               depends on it. iPXE is only the UNDI/SNP
+#                               provider for the LOM (ipxe-intel.efidrv, built
+#                               with EFI_DOWNGRADE_UX so it offers no boot
+#                               method of its own), and edk2 owns the whole
+#                               boot path above it.
 #   NETWORK_HTTP_ENABLE=TRUE    RedfishRestExDxe rides HttpDxe. TLS stays off:
 #                               the host interface is a point-to-point USB
 #                               link, and OpenSSL would cost ~1 MB of FV.
-# Fork-only options (coreboot gates these behind !CONFIG_EDK2_REPO_OFFICIAL):
-#   PRIORITIZE_INTERNAL, FOLLOW_BGRT_SPEC, TIMER_SUPPORT, LOAD_OPTION_ROMS,
-#   NETWORK_IPXE, USE_PLATFORM_GOP. They are only valid because this is the
-#   MrChromebox fork -- passing them to an upstream tianocore tree errors out.
+# TPM_ENABLE is gone: upstream UefiPayloadPkg has no TPM support to disable
+# (the knob and the whole Tcg stack were fork-only). The OS still gets the
+# ME PTT fTPM via the board port's ACPI TPM2 table, which is how it worked
+# anyway -- edk2's TCG stack only probes 0xfed40000 and this CRB is at the
+# non-standard 0xfed70000.
 EDK2_BUILD_FLAGS = " \
     -D BOOTLOADER=COREBOOT \
     -D BUILD_ARCH=X64 \
@@ -195,7 +222,6 @@ EDK2_BUILD_FLAGS = " \
     -D USE_CBMEM_FOR_CONSOLE=TRUE \
     -D VARIABLE_SUPPORT=SMMSTORE \
     -D SECURE_BOOT_ENABLE=TRUE \
-    -D TPM_ENABLE=FALSE \
     -D SD_MMC_TIMEOUT=10000 \
     -D PS2_KEYBOARD_ENABLE=TRUE \
     -D SIO_BUS_ENABLE=TRUE \
@@ -203,11 +229,13 @@ EDK2_BUILD_FLAGS = " \
     -D FOLLOW_BGRT_SPEC=TRUE \
     -D TIMER_SUPPORT=LAPIC \
     -D LOAD_OPTION_ROMS=TRUE \
+    -D NETWORK_DRIVER_ENABLE=TRUE \
     -D NETWORK_ENABLE=TRUE \
     -D NETWORK_SNP_ENABLE=TRUE \
-    -D NETWORK_PXE_BOOT=TRUE \
+    -D NETWORK_PXE_BOOT_ENABLE=TRUE \
     -D NETWORK_IP4_ENABLE=TRUE \
     -D NETWORK_IP6_ENABLE=FALSE \
+    -D NETWORK_VLAN_ENABLE=FALSE \
     -D NETWORK_HTTP_ENABLE=TRUE \
     -D NETWORK_TLS_ENABLE=FALSE \
     -D NETWORK_HTTP_BOOT_ENABLE=FALSE \
@@ -228,31 +256,21 @@ EDK2_BUILD_FLAGS = " \
 
 python () {
     # NETWORK_IPXE_UNDI embeds ipxe-intel.efidrv, the UNDI/SNP driver for the
-    # onboard NIC. NETWORK_IPXE -- the iPXE boot *application* -- is deliberately
-    # not set with it: the two are independent, and the application is not
-    # wanted. See EDK2_IPXE_APP below.
+    # onboard NIC.
     if d.getVar('EDK2_IPXE') == '1':
         d.appendVar('EDK2_BUILD_FLAGS', ' -D NETWORK_IPXE_UNDI=TRUE')
-    if d.getVar('EDK2_IPXE_APP') == '1':
-        d.appendVar('EDK2_BUILD_FLAGS', ' -D NETWORK_IPXE=TRUE')
-        # Deliberately a single word: coreboot emits the same PCD and Kconfig
-        # keeps the quotes on string values, so a value containing spaces
-        # reaches edk2's build.py mangled -- the DSC parser rejects it with
-        # "error 3000: Syntax error".
-        #
-        # It is also what gates the boot option: PlatformBootManagerLib only
-        # calls PlatformRegisterFvBootOption() when both PcdiPXEFile and
-        # PcdiPXEOptionName are set, so leaving this unset is what keeps the
-        # application out of the boot menu.
-        d.appendVar('EDK2_BUILD_FLAGS',
-                    ' --pcd gUefiPayloadPkgTokenSpaceGuid.PcdiPXEOptionName=L"%s"'
-                    % d.getVar('EDK2_IPXE_OPTION_NAME'))
     if d.getVar('EDK2_BOOTSPLASH_FILE'):
         d.appendVar('EDK2_BUILD_FLAGS', ' -D BOOTSPLASH_IMAGE=TRUE')
     if d.getVar('EDK2_GOP_FILE'):
         d.appendVar('EDK2_BUILD_FLAGS', ' -D USE_PLATFORM_GOP=TRUE')
     if d.getVar('EDK2_REDFISH') == '1':
         d.appendVar('EDK2_BUILD_FLAGS', ' -D REDFISH_ENABLE=TRUE')
+        if d.getVar('EDK2_REDFISH_CLIENT') == '1':
+            d.appendVar('EDK2_BUILD_FLAGS', ' -D REDFISH_CLIENT=TRUE')
+    elif d.getVar('EDK2_REDFISH_CLIENT') == '1':
+        bb.fatal("EDK2_REDFISH_CLIENT needs EDK2_REDFISH: RedfishClientPkg is "
+                 "the feature layer above the host interface, and its DSC/FDF "
+                 "block is nested inside the one REDFISH_ENABLE gates")
 }
 
 do_configure() {
@@ -289,38 +307,22 @@ do_configure() {
         install -m 0644 "${COREBOOT_VBT_FILE}" ${S}/UefiPayloadPkg/vbt.bin
     fi
 
-    # --- iPXE (coreboot's 'ipxe_rom' target) ---------------------------------
-    # Byte-for-byte the same step:
+    # --- iPXE ----------------------------------------------------------------
+    # The UNDI/SNP driver for the onboard NIC, dispatched from the DXE FV (see
+    # patch 0021). Without it nothing in this payload publishes
+    # EFI_SIMPLE_NETWORK_PROTOCOL for the LOM -- edk2 has no driver for this
+    # NIC at all, and SnpDxe only layers SNP over an existing UNDI/NII
+    # instance. A chainloaded iPXE snp.efi binds SNP handles and nothing else,
+    # so with only the BMC's gadget publishing one it had no LOM to boot from.
     #
-    #   cp $(top)/payloads/external/iPXE/ipxe/ipxe.rom \
-    #      $(EDK2_PATH)/UefiPayloadPkg/NetworkDrivers/ipxe.efi
-    #
-    # The rename is coreboot's, not ours: ipxe.rom is the generic name its iPXE
-    # Makefile gives whichever target it built, and with CONFIG_IPXE_BUILD_EFI
-    # that target is bin-x86_64-efi-sb/ipxe.efi -- a PE, which is what
-    # UefiPayloadPkg.fdf expects at NetworkDrivers/ipxe.efi.
+    # Upstream UefiPayloadPkg has no NetworkDrivers directory of its own; the
+    # prebuilt Realtek and ASIX UNDI blobs the fork shipped there were inert on
+    # this board and are simply gone.
     if [ "${EDK2_IPXE}" = "1" ]; then
         install -d ${S}/UefiPayloadPkg/NetworkDrivers
-
-        # Only staged when the application is actually wanted -- the FDF entry
-        # that consumes it is gated on NETWORK_IPXE, which EDK2_IPXE_APP sets.
-        if [ "${EDK2_IPXE_APP}" = "1" ]; then
-            install -m 0644 ${DEPLOY_DIR_IMAGE}/ipxe.rom \
-                ${S}/UefiPayloadPkg/NetworkDrivers/ipxe.efi
-        fi
-
-        # The UNDI/SNP driver for the onboard NIC, dispatched from the DXE FV
-        # (see the FDF patch). Without it nothing in this payload publishes
-        # EFI_SIMPLE_NETWORK_PROTOCOL for the LOM -- UefiPayloadPkg carries
-        # prebuilt Realtek and ASIX UNDI blobs and no Intel one, and SnpDxe only
-        # layers SNP over an existing UNDI/NII instance. A chainloaded iPXE
-        # snp.efi binds SNP handles and nothing else, so with only the BMC's
-        # gadget publishing one it had no LOM to boot from at all.
         install -m 0644 ${DEPLOY_DIR_IMAGE}/ipxe-intel.efidrv \
             ${S}/UefiPayloadPkg/NetworkDrivers/ipxe-intel.efidrv
     fi
-
-    # Redfish wiring itself is applied by do_patch -- see the SRC_URI patches.
 }
 
 do_compile() {

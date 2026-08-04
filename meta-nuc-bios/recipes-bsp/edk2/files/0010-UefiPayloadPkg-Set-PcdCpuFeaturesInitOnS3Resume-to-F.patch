@@ -1,0 +1,34 @@
+From ef6719efc97a60a9b46c834a71e4ee07284daa7c Mon Sep 17 00:00:00 2001
+From: Matt DeVillier <matt.devillier@gmail.com>
+Date: Thu, 2 Jan 2025 15:41:57 -0600
+Subject: [PATCH 10/23] UefiPayloadPkg: Set PcdCpuFeaturesInitOnS3Resume to
+ FALSE for coreboot
+
+Programming CPU features on S3 resume causes issues with Qubes and others
+due to CPU cores getting out of sync, so disable for now.
+
+Signed-off-by: Matt DeVillier <matt.devillier@gmail.com>
+(cherry picked from commit 00885ccb96426c0449e418364ab1eb039ffebc27)
+---
+ UefiPayloadPkg/UefiPayloadPkg.dsc | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/UefiPayloadPkg/UefiPayloadPkg.dsc b/UefiPayloadPkg/UefiPayloadPkg.dsc
+index ec2222fee1..f54cacc13c 100644
+--- a/UefiPayloadPkg/UefiPayloadPkg.dsc
++++ b/UefiPayloadPkg/UefiPayloadPkg.dsc
+@@ -675,6 +675,11 @@
+   ## Whether allows PCI RB to allocate DMA memory above 4GB
+   gUefiPayloadPkgTokenSpaceGuid.PcdPciAllocateMemoryAbove4GB|FALSE
+ 
++  # Skip initializing CPU features during S3 resume for coreboot
++!if $(BOOTLOADER) == COREBOOT
++  gUefiCpuPkgTokenSpaceGuid.PcdCpuFeaturesInitOnS3Resume|FALSE
++!endif
++
+   # Disable MTRR programming
+   gUefiCpuPkgTokenSpaceGuid.PcdCpuDisableMtrrProgramming|TRUE
+ 
+-- 
+2.55.0
+

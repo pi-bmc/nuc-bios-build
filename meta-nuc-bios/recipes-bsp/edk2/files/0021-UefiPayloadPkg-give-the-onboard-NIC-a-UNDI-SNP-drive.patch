@@ -1,14 +1,19 @@
-From: nuc-bios-build <nbatkins@gmail.com>
-Subject: [PATCH] UefiPayloadPkg: UNDI/SNP for the onboard NIC, and prune the rest
+From d946c3f740dd6abe30a99b85f4fe0657febab75e Mon Sep 17 00:00:00 2001
+From: appkins <nbatkins@gmail.com>
+Date: Tue, 4 Aug 2026 13:05:43 -0500
+Subject: [PATCH 21/23] UefiPayloadPkg: give the onboard NIC a UNDI/SNP driver,
+ and prune the rest
 
 Two related changes to what BDS offers as a network boot device.
 
 1. Publish SNP for the onboard I218-V.
 
-Nothing in this payload did. UefiPayloadPkg carries prebuilt Realtek and ASIX
-UNDI blobs and no Intel one, and SnpDxe only layers SNP over an existing
-UNDI/NII instance, so the BMC's CDC-ECM gadget was the only network interface
-the firmware exposed. Measured on hardware 2026-08-04:
+Nothing in this payload did, and nothing in edk2 can: no driver matches
+8086:15a3, or any PCI network class, and edk2-platforms' only UNDI
+(OptionRomPkg/UndiRuntimeDxe) targets 8086:1229 -- a 1990s EtherExpress
+PRO/100. SnpDxe, UefiPxeBcDxe, Ip4Dxe and friends are all consumers; they need
+a UNDI/NII or SNP from somewhere. So the BMC's CDC-ECM gadget was the only
+network interface the firmware exposed. Measured on hardware 2026-08-04:
 
     NucRedfishSync: 2 SNP handle(s) in the system
     NucRedfishSync:   SNP[0] DA:A7:62:23:3E:F5
@@ -20,9 +25,8 @@ it had nothing to netboot from and retried DHCP over the management link until
 it hit its retry limit.
 
 The driver is iPXE built as a UEFI driver (bin-x86_64-efi/intel.efidrv, via
-interface/efi/efi_snp.c), embedded next to the Realtek and ASIX blobs. It is
-gated on its own NETWORK_IPXE_UNDI define rather than NETWORK_IPXE, because the
-iPXE boot *application* is a separate thing and is not wanted here.
+interface/efi/efi_snp.c). It is gated on its own NETWORK_IPXE_UNDI define
+because the iPXE boot *application* is a separate thing and is not wanted here.
 
 2. Prune the boot options nobody should see.
 
@@ -55,13 +59,19 @@ after pruning there is nothing left to disambiguate against.
 Upstream-Status: Inappropriate [platform specific]
 Signed-off-by: nuc-bios-build <nbatkins@gmail.com>
 ---
---- a/UefiPayloadPkg/Library/PlatformBootManagerLib/PlatformBootManager.c	2026-08-04 10:12:32.423293206 -0500
-+++ b/UefiPayloadPkg/Library/PlatformBootManagerLib/PlatformBootManager.c	2026-08-04 10:46:05.166878339 -0500
-@@ -441,6 +441,176 @@
+ .../PlatformBootManager.c                     | 171 ++++++++++++++++++
+ UefiPayloadPkg/UefiPayloadPkg.dsc             |   6 +
+ UefiPayloadPkg/UefiPayloadPkg.fdf             |  19 ++
+ 3 files changed, 196 insertions(+)
+
+diff --git a/UefiPayloadPkg/Library/PlatformBootManagerLib/PlatformBootManager.c b/UefiPayloadPkg/Library/PlatformBootManagerLib/PlatformBootManager.c
+index 0788d850ab..16542b2083 100644
+--- a/UefiPayloadPkg/Library/PlatformBootManagerLib/PlatformBootManager.c
++++ b/UefiPayloadPkg/Library/PlatformBootManagerLib/PlatformBootManager.c
+@@ -289,6 +289,175 @@ PlatformBootManagerBeforeConsole (
    PlatformConsoleInit ();
  }
  
-+
 +/**
 +  Tidy the auto-created network boot options.
 +
@@ -234,7 +244,7 @@ Signed-off-by: nuc-bios-build <nbatkins@gmail.com>
  /**
    Do the platform specific action after the console is connected.
  
-@@ -475,6 +645,8 @@
+@@ -323,6 +492,8 @@ PlatformBootManagerAfterConsole (
    EfiBootManagerConnectAll ();
    EfiBootManagerRefreshAllBootOption ();
  
@@ -243,31 +253,53 @@ Signed-off-by: nuc-bios-build <nbatkins@gmail.com>
    //
    // Active BOOT_ON_FLASH_UPDATE mode means that at least one capsule has been
    // discovered by a bootloader and passed for further processing into EDK which
---- a/UefiPayloadPkg/UefiPayloadPkg.dsc	2026-08-04 10:10:31.774304187 -0500
-+++ b/UefiPayloadPkg/UefiPayloadPkg.dsc	2026-08-04 10:10:31.774355242 -0500
-@@ -201,6 +201,7 @@
-   DEFINE NETWORK_ASIX_USB2              = FALSE
-   DEFINE NETWORK_SNP_ENABLE             = FALSE
-   DEFINE NETWORK_IPXE                   = FALSE
-+  DEFINE NETWORK_IPXE_UNDI              = FALSE
+diff --git a/UefiPayloadPkg/UefiPayloadPkg.dsc b/UefiPayloadPkg/UefiPayloadPkg.dsc
+index 2c97d6c3bc..8dce58f5c3 100644
+--- a/UefiPayloadPkg/UefiPayloadPkg.dsc
++++ b/UefiPayloadPkg/UefiPayloadPkg.dsc
+@@ -155,6 +155,12 @@
+   #
+   DEFINE REDFISH_ENABLE        = FALSE
  
- !if $(NETWORK_PXE_BOOT) == TRUE
-   DEFINE NETWORK_ENABLE                 = TRUE
---- a/UefiPayloadPkg/UefiPayloadPkg.fdf	2026-08-04 10:10:31.774451063 -0500
-+++ b/UefiPayloadPkg/UefiPayloadPkg.fdf	2026-08-04 10:10:31.774484943 -0500
-@@ -504,6 +504,15 @@
- !if $(ARCH) == IA32
-   # FIXME
- !else
-+# NucRedfish: UNDI/SNP for the onboard LOM. Nothing else in this payload
-+# publishes EFI_SIMPLE_NETWORK_PROTOCOL for it, so a boot client that binds
-+# SNP handles only -- iPXE's snp.efi, which Tinkerbell chainloads -- saw just
-+# the BMC's host interface and had nothing to netboot from.
++  #
++  # Embed a UNDI/SNP driver for the onboard NIC (see the FDF). Separate from
++  # any iPXE boot application: this is only the driver.
++  #
++  DEFINE NETWORK_IPXE_UNDI     = FALSE
++
+   # Dfine the maximum size of the capsule image without a reset flag that the platform can support.
+   DEFINE MAX_SIZE_NON_POPULATE_CAPSULE = 0xa00000
+ 
+diff --git a/UefiPayloadPkg/UefiPayloadPkg.fdf b/UefiPayloadPkg/UefiPayloadPkg.fdf
+index 3a7e5b6d60..749e0bba49 100644
+--- a/UefiPayloadPkg/UefiPayloadPkg.fdf
++++ b/UefiPayloadPkg/UefiPayloadPkg.fdf
+@@ -357,6 +357,25 @@ INF MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
+ !if $(NETWORK_DRIVER_ENABLE) == TRUE
+   !include NetworkPkg/Network.fdf.inc
+ #
++# UNDI/SNP for the onboard LOM. Nothing else in this payload publishes
++# EFI_SIMPLE_NETWORK_PROTOCOL for it: edk2 has no driver for this NIC at all
++# (nothing matches 8086:15a3, and OptionRomPkg/UndiRuntimeDxe targets 8086:1229,
++# a 1990s EtherExpress PRO/100), and SnpDxe only layers SNP over an existing
++# UNDI/NII instance. So a boot client that binds SNP handles only -- iPXE's
++# snp.efi, which Tinkerbell chainloads -- saw just the BMC's host interface and
++# had nothing to netboot from.
++#
++# The binary is iPXE built as a UEFI driver (bin-x86_64-efi/intel.efidrv, via
++# interface/efi/efi_snp.c) with EFI_DOWNGRADE_UX, so it publishes no
++# EFI_LOAD_FILE_PROTOCOL of its own and contributes no boot option; edk2's PXE
++# stack owns the whole boot path above it.
++#
 +!if $(NETWORK_IPXE_UNDI) == TRUE
 +  FILE DRIVER = F773F4F9-5C3E-475F-AE02-151D514D7379 {
 +    SECTION PE32 = UefiPayloadPkg/NetworkDrivers/ipxe-intel.efidrv
 +  }
 +!endif
- !if $(NETWORK_RTEK_PCI)
-   FILE DRIVER = D30D5496-6DF9-462D-9B97-0B93F659D1A0 {
-     SECTION PE32 = UefiPayloadPkg/NetworkDrivers/RtkUndiDxe.efi
++#
+ # Redfish host interface (DSP0270). See the matching block in the DSC.
+ #
+ !if $(REDFISH_ENABLE) == TRUE
+-- 
+2.55.0
+

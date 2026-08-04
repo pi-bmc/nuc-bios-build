@@ -1,0 +1,172 @@
+From 6198fa2d86b2438bb05818c044820181ed42dc65 Mon Sep 17 00:00:00 2001
+From: appkins <nbatkins@gmail.com>
+Date: Tue, 4 Aug 2026 13:05:00 -0500
+Subject: [PATCH 20/23] UefiPayloadPkg: wire in the Redfish host-interface
+ stack
+
+UefiPayloadPkg has no Redfish support of its own, but it already carries
+!include NetworkPkg/* lines at exactly the right point in both the DSC and the
+DXE FV, and RedfishPkg ships matching .dsc.inc/.fdf.inc files, so each Redfish
+include goes directly after its Network counterpart.
+
+Alongside them:
+
+  * UsbCdcEcm + NetworkCommon, which turn the BMC's CDC-ECM gadget into an
+    EFI_SIMPLE_NETWORK_PROTOCOL. UefiPayloadPkg never references the in-tree
+    USB network drivers.
+
+  * NucRedfishPkg's RedfishConfigDriver and NucRedfishSyncDxe.
+
+  * Credential and host-interface library overrides. RedfishLibs.dsc.inc
+    resolves both to IPMI-driven instances, and this board has no IPMI
+    transport at all -- no LPC KCS, no SSIF -- so they could never succeed.
+    This is why RedfishPkg/Redfish.dsc.inc is not used wholesale: the
+    overrides have to land after it.
+
+  * The PCDs without which the drivers load and do nothing: the REST EX device
+    path that selects the host interface by MAC, the service UUID matching the
+    type 42 record, and the bootstrap-credential disable.
+
+  * PcdDebugPrintErrorLevel gains DEBUG_MANAGEABILITY (0x00800000).
+    RedfishDiscoverDxe reports almost everything at that level, so without it
+    the discovery path can fail every step and produce a completely silent log.
+
+FD_SIZE goes from 7 MB to 12 MB to hold it. The FD is sparse -- coreboot's ELF
+conversion drops the unused tail -- so this costs nothing in CBFS.
+
+Upstream-Status: Inappropriate [platform specific]
+Signed-off-by: nuc-bios-build <nbatkins@gmail.com>
+---
+ UefiPayloadPkg/UefiPayloadPkg.dsc | 69 ++++++++++++++++++++++++++++++-
+ UefiPayloadPkg/UefiPayloadPkg.fdf | 14 ++++++-
+ 2 files changed, 80 insertions(+), 3 deletions(-)
+
+diff --git a/UefiPayloadPkg/UefiPayloadPkg.dsc b/UefiPayloadPkg/UefiPayloadPkg.dsc
+index 277de0fe4f..2c97d6c3bc 100644
+--- a/UefiPayloadPkg/UefiPayloadPkg.dsc
++++ b/UefiPayloadPkg/UefiPayloadPkg.dsc
+@@ -147,6 +147,14 @@
+   DEFINE DISABLE_RESET_SYSTEM  = FALSE
+   DEFINE NETWORK_DRIVER_ENABLE = FALSE
+ 
++  #
++  # Redfish host interface (DSP0270). RedfishPkg's RedfishDefines.dsc.inc
++  # defaults this to TRUE, but that file is only reached from inside the block
++  # this gates, so declare it here with the rest of the platform's feature
++  # switches and let -D override it.
++  #
++  DEFINE REDFISH_ENABLE        = FALSE
++
+   # Dfine the maximum size of the capsule image without a reset flag that the platform can support.
+   DEFINE MAX_SIZE_NON_POPULATE_CAPSULE = 0xa00000
+ 
+@@ -760,7 +768,12 @@
+ [PcdsPatchableInModule.common]
+   gEfiMdeModulePkgTokenSpaceGuid.PcdBootManagerMenuFile|{ 0x21, 0xaa, 0x2c, 0x46, 0x14, 0x76, 0x03, 0x45, 0x83, 0x6e, 0x8a, 0xb6, 0xf4, 0x66, 0x23, 0x31 }
+   gEfiMdePkgTokenSpaceGuid.PcdReportStatusCodePropertyMask|0x7
+-  gEfiMdePkgTokenSpaceGuid.PcdDebugPrintErrorLevel|0x8000004F
++  #
++  # DEBUG_MANAGEABILITY (0x00800000) on top of the stock mask.
++  # RedfishDiscoverDxe reports almost everything at that level, so without it
++  # the discovery path can fail at every step and produce a silent log.
++  #
++  gEfiMdePkgTokenSpaceGuid.PcdDebugPrintErrorLevel|0x8080004F
+ !if $(USE_CBMEM_FOR_CONSOLE) == FALSE
+   !if $(SOURCE_DEBUG_ENABLE)
+     gEfiMdePkgTokenSpaceGuid.PcdDebugPropertyMask|0x17
+@@ -972,6 +985,60 @@
+ [Defines]
+   DEFINE PLATFORMX64_ENABLE = TRUE
+   !include NetworkPkg/Network.dsc.inc
++
++#
++# Redfish host interface (DSP0270) over the BMC's USB CDC-ECM gadget.
++#
++# RedfishPkg ships .dsc.inc files that mirror NetworkPkg's, so each include
++# goes directly after its Network counterpart. Redfish.dsc.inc is deliberately
++# not used wholesale: the platform library overrides below have to land after
++# RedfishLibs.dsc.inc, which resolves both the credential and host-interface
++# classes to IPMI-driven instances. This board has no IPMI transport at all --
++# no LPC KCS, no SSIF -- so those could never succeed.
++#
++!if $(REDFISH_ENABLE) == TRUE
++[Defines]
++  !include RedfishPkg/RedfishDefines.dsc.inc
++
++[LibraryClasses]
++  !include RedfishPkg/RedfishLibs.dsc.inc
++  RedfishPlatformCredentialLib|NucRedfishPkg/Library/NucRedfishCredentialLib/NucRedfishCredentialLib.inf
++  RedfishPlatformHostInterfaceLib|NucRedfishPkg/Library/NucRedfishHostInterfaceLib/NucRedfishHostInterfaceLib.inf
++  RedfishPlatformWantedDeviceLib|RedfishPkg/Library/RedfishPlatformWantedDeviceLibNull/RedfishPlatformWantedDeviceLibNull.inf
++  RedfishContentCodingLib|RedfishPkg/Library/RedfishContentCodingLibNull/RedfishContentCodingLibNull.inf
++
++#
++# Without these the Redfish drivers load and then do nothing: the REST EX
++# device path that selects the host interface by MAC, the service UUID that
++# has to match the SMBIOS type 42 record, and the bootstrap-credential
++# disable (also IPMI-specified).
++#
++[PcdsFixedAtBuild]
++  gEfiRedfishPkgTokenSpaceGuid.PcdRedfishServicePort|80
++  gEfiRedfishPkgTokenSpaceGuid.PcdRedfishDisableBootstrapCredentialService|TRUE
++  gEfiRedfishPkgTokenSpaceGuid.PcdRedfishServiceUuid|L"5cc27a14-c9f9-50c6-bdaa-b91b6dc77f98"
++  gEfiRedfishPkgTokenSpaceGuid.PcdRedfishRestExServiceDevicePath.DevicePathMatchMode|DEVICE_PATH_MATCH_MAC_NODE
++  gEfiRedfishPkgTokenSpaceGuid.PcdRedfishRestExServiceDevicePath.DevicePathNum|1
++  gEfiRedfishPkgTokenSpaceGuid.PcdRedfishRestExServiceDevicePath.DevicePath|{DEVICE_PATH("MAC(DAA762233EF5,0x1)")}
++
++[PcdsDynamicExDefault]
++  gEfiNetworkPkgTokenSpaceGuid.PcdIPv6HttpSupport|FALSE
++
++[Components.X64]
++  !include RedfishPkg/RedfishComponents.dsc.inc
++  #
++  # The in-tree CDC-ECM driver, which turns the BMC's gadget into an
++  # EFI_SIMPLE_NETWORK_PROTOCOL. UefiPayloadPkg never references these.
++  #
++  MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/NetworkCommon.inf
++  MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcEcm/UsbCdcEcm.inf
++  #
++  # RedfishConfigDriver and the host-side client that consumes what it
++  # discovers.
++  #
++  NucRedfishPkg/RedfishConfigDriver/RedfishConfigDriver.inf
++  NucRedfishPkg/NucRedfishSyncDxe/NucRedfishSyncDxe.inf
++!endif
+ !endif
+ 
+ [Components.X64, Components.AARCH64]
+diff --git a/UefiPayloadPkg/UefiPayloadPkg.fdf b/UefiPayloadPkg/UefiPayloadPkg.fdf
+index 1e1df9e533..3a7e5b6d60 100644
+--- a/UefiPayloadPkg/UefiPayloadPkg.fdf
++++ b/UefiPayloadPkg/UefiPayloadPkg.fdf
+@@ -18,8 +18,8 @@ DEFINE FD_SIZE     = 0x00850000
+ DEFINE NUM_BLOCKS  = 0x850
+ !else
+ 
+-DEFINE FD_SIZE     = 0x00700000
+-DEFINE NUM_BLOCKS  = 0x700
++DEFINE FD_SIZE     = 0x00C00000
++DEFINE NUM_BLOCKS  = 0xC00
+ !endif
+ 
+ ################################################################################
+@@ -356,6 +356,16 @@ INF MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
+ #
+ !if $(NETWORK_DRIVER_ENABLE) == TRUE
+   !include NetworkPkg/Network.fdf.inc
++#
++# Redfish host interface (DSP0270). See the matching block in the DSC.
++#
++!if $(REDFISH_ENABLE) == TRUE
++  !include RedfishPkg/Redfish.fdf.inc
++  INF MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/NetworkCommon.inf
++  INF MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcEcm/UsbCdcEcm.inf
++  INF NucRedfishPkg/RedfishConfigDriver/RedfishConfigDriver.inf
++  INF NucRedfishPkg/NucRedfishSyncDxe/NucRedfishSyncDxe.inf
++!endif
+ !endif
+ !endif
+ 
+-- 
+2.55.0
+

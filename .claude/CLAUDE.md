@@ -33,6 +33,93 @@ The payload is a separate recipe from coreboot on purpose (see the DESCRIPTION i
 the tree by `do_configure` rather than patched into a tree coreboot clones
 mid-`do_compile`.
 
+## The payload tree is upstream edk2, not the MrChromebox fork
+
+Migrated 2026-08-04. coreboot's `payloads/external/edk2` defaults to
+`EDK2_REPO_MRCHROMEBOX` / `origin/uefipayload_2605`; this recipe points at
+`tianocore/edk2` master instead, pinned by SRCREV.
+
+The fork turned out to be exactly `edk2-stable202605` **plus 103 commits and
+nothing behind it**, so the delta was a patch series rather than a divergent
+tree. Eighteen of those commits matter for this board and cherry-pick onto
+master without a single conflict; they are `files/0001-0018` and each keeps its
+original authorship plus a `(cherry picked from commit ...)` trailer. They split
+into coreboot/payload correctness (MTRR programming, root bridges from HOB, the
+framebuffer BAR offset, SMMSTORE block alignment, uninitialised memory in the
+entry point) and features this board is configured to use (CFR SetupMenu,
+`PRIORITIZE_INTERNAL`, the BGRT logo position). `files/0019-0023` are local.
+
+The reason to move was edk2-redfish-client: the GUIDs it needs
+(`gEdkIIRedfisEventRedfishInterfaceDisconnectionGuid` and friends) are declared
+by `RedfishPkg.dec` on master and by **no stable tag through 202605**. The
+fork's `RedfishPkg` is byte-identical to upstream's at that tag, so the old note
+blaming the fork for this was wrong — it was a stable-tag-vs-master mismatch all
+along.
+
+Things that are *not* fork-only, contrary to what this file and the recipe used
+to say: SMMSTORE (the whole `SmmStoreLib`/`SmmStoreFvb` stack is upstream), the
+cbmem console (`USE_CBMEM_FOR_CONSOLE`), `TIMER_SUPPORT`, `LOAD_OPTION_ROMS` and
+`BOOTSPLASH_IMAGE`.
+
+Network flags were renamed by the move. The fork's `NETWORK_PXE_BOOT` was an
+aggregator that also set `NETWORK_DRIVER_ENABLE`; upstream has only
+`NETWORK_DRIVER_ENABLE` plus NetworkPkg's own knobs (`NETWORK_PXE_BOOT_ENABLE`,
+etc.). **`NETWORK_DRIVER_ENABLE` is the load-bearing one**: it is what makes the
+DSC `!include NetworkPkg/Network.dsc.inc`, and therefore what the Redfish and
+PXE blocks hang off. Drop it and every other `NETWORK_*` flag goes inert
+*silently* — no HTTP, no REST EX, no host interface, and no build error.
+
+### Two upstream bugs this exposed
+
+Both are the same shape, and both fail silently. `UefiPayloadPkg` lists two
+protocol producers only under `[Components.AARCH64]` and places neither in a
+firmware volume on any architecture, so on X64 they are not built at all:
+
+| Producer | Depended on by | Symptom when missing |
+| --- | --- | --- |
+| `RngDxe` (`EFI_RNG_PROTOCOL`) | `DxeNetLib`, so *every* NetworkPkg driver | The whole stack lands in the DXE FV and is never dispatched. No SNP, no PXE boot option, no REST EX. |
+| `Hash2DxeCrypto` (`EFI_HASH2_SERVICE_BINDING_PROTOCOL`) | `TcpDxe` alone | Subtler: SNP/IP4/DHCP4/MTFTP4/HTTP/PXE all come up and netboot works, but `RedfishDiscoverDxe` wants TCP4 **and** REST EX service binding on the same handle, so discovery silently finds nothing. |
+
+`files/0023` adds both, gated on `NETWORK_DRIVER_ENABLE`. If Redfish ever goes
+quiet again with a healthy-looking network stack, check `TcpDxe` dispatched
+before anything else.
+
+The diagnostic that found this: cross-reference the FV's module list against
+the drivers that actually emitted a `Loading driver` line.
+
+```sh
+FV=build/tmp/work/*/edk2-uefipayload/*/git/Build/UefiPayloadPkgX64/RELEASE_GCC/FV
+grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f-]{27}' $FV/DXEFV.inf | sort -u > /tmp/fv.txt
+grep -Ff /tmp/fv.txt $FV/Guid.xref     # GUID -> module name
+```
+
+Modules present in `DXEFV.inf` but absent from the log are depex failures.
+Ignore `DxeCore`/`PcdDxe`/`DevicePathDxe`/the status-code routers (they run
+before the console is up) and `UiApp`/`Shell`/`BootManagerMenuApp` (applications,
+loaded on demand).
+
+### The cbmem console had to grow
+
+`CONFIG_CONSOLE_CBMEM_BUFFER_SIZE` is now `0x80000`. The stock 128 KiB does not
+hold one boot of this payload, and what it drops is the middle — DXE dispatch
+through Redfish discovery — leaving a log that starts at the bootblock and ends
+at the OS handoff with a hole where the answer was. `cbmem -c | wc -c` returning
+more than the buffer size is the tell.
+
+The `CONSOLE` FMAP region is not an alternative: `board.fmd` puts it at
+`0x190000`, below the BIOS region (`0x1a0000`), so the running ME refuses the
+read and `flashrom --fmap -i CONSOLE -r` fails with `Transaction error!`. That
+one needs the SOIC-8 clip.
+
+### Flashing wipes the EFI variable store
+
+`flashrom --ifd -i bios -w` rewrites the whole BIOS region, and `SMMSTORE` lives
+inside it — the `(PRESERVE)` annotation in `board.fmd` means nothing to flashrom.
+So every flash loses `BootOrder`, the `debian` entry and any staged `BootNext`,
+and the first boot afterwards lands on whatever BDS auto-creates first, which is
+the PXE entry. This is expected, not a regression. Steer it back with
+`efibootmgr -n 0001 && reboot` from whatever booted.
+
 There is no flasher live ISO. It was removed from the tree deliberately — do not
 resurrect `kas-flasher.yml` or a `flasher` multiconfig. Flash either in-band (below)
 or with a SOIC-8 clip via `scripts/nuc-spi.sh`.
@@ -75,8 +162,11 @@ cmp bgrt.bmp meta-nuc-bios/recipes-bsp/edk2/files/bootsplash.bmp
 ssh root@10.1.40.22 'cat /sys/firmware/acpi/bgrt/status'   # 1 = actually drawn
 ```
 
-This is byte-exact proof of what the payload displayed, and works because the
-payload builds with `FOLLOW_BGRT_SPEC=TRUE`.
+This is byte-exact proof of what the payload displayed. It works because
+`BootGraphicsResourceTableDxe` is in the DXE FV, which is stock upstream
+behaviour gated on `BOOTSPLASH_IMAGE`. `FOLLOW_BGRT_SPEC=TRUE` is a *separate*
+thing and only moves the logo to 38.2% from the top — it has no bearing on
+whether the BGRT table is published.
 
 **Do not try to verify a splash by screenshotting the KVM.** The logo is only up
 for `PLATFORM_BOOT_TIMEOUT` (3 s) and the JetKVM's HDMI capture cannot re-lock
@@ -131,10 +221,12 @@ RedfishConfigHandlerDriver -> "service discovered"
 NucRedfishSyncDxe          -> the actual HTTP exchange
 ```
 
-Everything above `NucRedfishSyncDxe` is stock RedfishPkg and works. It stops
-there because nothing in the payload *produces*
-`EDKII_REDFISH_CONFIG_HANDLER_PROTOCOL` (that is edk2-redfish-client, which does
-not build against this tree). `NucRedfishSyncDxe` is that consumer.
+Everything above `NucRedfishSyncDxe` is stock RedfishPkg. `NucRedfishSyncDxe`
+is the consumer of `EDKII_REDFISH_CONFIG_HANDLER_PROTOCOL` that the payload
+otherwise lacks. Since the move to upstream edk2 (below), edk2-redfish-client
+is compiled in alongside it and produces that protocol too — but it needs far
+more of a Redfish service than the JetKVM currently implements, so
+`NucRedfishSyncDxe` is still what actually does the work.
 
 **Four non-obvious traps in writing such a consumer**, all hit on hardware
 2026-07-30:
@@ -361,7 +453,25 @@ they are inert here but do occupy FV space.
 `PlatformBootManagerLib` additionally prunes auto-created network boot options
 that traverse a USB node — that is the BMC's host interface, a management link
 with no DHCP server on it — and any duplicate MAC, stripping the `" 2"` BDS
-appends. See patch 0003.
+appends. See patch 0021.
+
+**Known open issue: the prune no longer wins.** With edk2-redfish-client
+compiled in, `RedfishClientPkg/HiiToRedfishBootDxe`'s `RefreshBootOrderList()`
+calls `EfiBootManagerRefreshAllBootOption()` of its own accord, *after* BDS —
+by which time the CDC-ECM NIC's PXE stack has finally come up (it does not
+during `EfiBootManagerConnectAll()`; the second
+`RedfishDiscoverDriverBindingStart` in the log is well after `BdsWait`). So the
+host-interface `PXEv4 (MAC:DAA762233EF5)` entry is recreated after the prune
+deleted it, and reappears in `efibootmgr`. The prune itself is fine — it simply
+runs too early and is no longer the last writer.
+
+The right fix is to stop deleting after the fact and filter at the source:
+install `EDKII_PLATFORM_BOOT_MANAGER_PROTOCOL`
+(`gEdkiiPlatformBootManagerProtocolGuid`), whose `RefreshAllBootOptions()` hook
+`EfiBootManagerRefreshAllBootOption()` calls internally — see
+`MdeModulePkg/Library/UefiBootManagerLib/BmBoot.c`. Every caller then goes
+through the filter, whatever the ordering. Do not try to fix this by chasing
+callers or by re-running the prune from a later event.
 
 ### Approaches that do not work — do not retry these
 

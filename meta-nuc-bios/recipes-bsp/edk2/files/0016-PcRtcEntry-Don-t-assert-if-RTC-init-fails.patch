@@ -1,0 +1,36 @@
+From 9a78e423c22f600ee8642518a7268b277297dd5e Mon Sep 17 00:00:00 2001
+From: Matt DeVillier <matt.devillier@gmail.com>
+Date: Tue, 31 Mar 2026 09:13:17 -0500
+Subject: [PATCH 16/23] PcRtcEntry: Don't assert if RTC init fails
+
+Failing to boot because of a dead CMOS battery is dumb.
+
+Signed-off-by: Matt DeVillier <matt.devillier@gmail.com>
+(cherry picked from commit 336fe8a0272e62b1491c7151ce2a476d59991c08)
+---
+ PcAtChipsetPkg/PcatRealTimeClockRuntimeDxe/PcRtcEntry.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/PcAtChipsetPkg/PcatRealTimeClockRuntimeDxe/PcRtcEntry.c b/PcAtChipsetPkg/PcatRealTimeClockRuntimeDxe/PcRtcEntry.c
+index f8a8817821..a2f1407eea 100644
+--- a/PcAtChipsetPkg/PcatRealTimeClockRuntimeDxe/PcRtcEntry.c
++++ b/PcAtChipsetPkg/PcatRealTimeClockRuntimeDxe/PcRtcEntry.c
+@@ -256,7 +256,14 @@ InitializePcRtc (
+   mMaximalValidYear = PcdGet16 (PcdMaximalValidYear);
+ 
+   Status = PcRtcInit (&mModuleGlobal);
+-  ASSERT_EFI_ERROR (Status);
++  if (EFI_ERROR (Status)) {
++    //
++    // On some platforms (or with a dead/absent RTC battery), the legacy RTC may
++    // report invalid status or never complete an update cycle. Don't stop DXE
++    // with an ASSERT; continue boot without a functional hardware RTC.
++    //
++    DEBUG ((DEBUG_WARN, "PcRtc: RTC init failed: %r\n", Status));
++  }
+ 
+   Status = gBS->CreateEventEx (
+                   EVT_NOTIFY_SIGNAL,
+-- 
+2.55.0
+

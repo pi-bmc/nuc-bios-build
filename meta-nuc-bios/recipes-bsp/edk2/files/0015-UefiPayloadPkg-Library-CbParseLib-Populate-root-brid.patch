@@ -1,0 +1,144 @@
+From 5085765a03ee4acd6c3ee8120d3b0e7742cc702e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20=C5=BBygowski?= <michal.zygowski@3mdeb.com>
+Date: Thu, 9 Oct 2025 11:33:27 +0200
+Subject: [PATCH 15/23] UefiPayloadPkg/Library/CbParseLib: Populate root
+ bridges info from HOB
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On AMD server systems there are multiple PCI root bridges. The root
+bridge scanning in UEFI Payload is not sufficient to detect the
+memory and I/O apertures properly. For example, on Turin system, the
+I/O aperture on the first root bridge containing the FCH may not have
+any I/O resources detected on the PCI devices. This results in the
+I/O decoding to be disabled on the root bridge, effectively breaking
+the I/O-based serial ports, e.g. on Super I/Os and BMCs.
+
+Populate the root bridge info from CB_TAG_RB_INFO which contains
+data compatible with the Universal Payload PCI Root Bridges Info HOB.
+The PciHostBridgeLib will pick the HOB up, if available, and populate
+proper root bridge apertures for AMD systems. Otherwise, fall back
+to root bridge scanning.
+
+Relevant coreboot patches:
+https://review.coreboot.org/c/coreboot/+/89486
+https://review.coreboot.org/c/coreboot/+/89487
+
+TEST=Boot UEFI Payload and see the serial console no longer breaks
+after PCI enumeration in UEFI Payload on Gigabyte MZ33-AR1.
+
+Signed-off-by: Michał Żygowski <michal.zygowski@3mdeb.com>
+(cherry picked from commit 2f65ab6fb2da0b17b1e60aa639090147d8eb50f4)
+---
+ UefiPayloadPkg/Include/Coreboot.h             |  2 +
+ .../Library/CbParseLib/CbParseLib.c           | 53 +++++++++++++++++++
+ .../Library/CbParseLib/CbParseLib.inf         |  1 +
+ 3 files changed, 56 insertions(+)
+
+diff --git a/UefiPayloadPkg/Include/Coreboot.h b/UefiPayloadPkg/Include/Coreboot.h
+index 1e156f5a3f..78ee4fcf20 100644
+--- a/UefiPayloadPkg/Include/Coreboot.h
++++ b/UefiPayloadPkg/Include/Coreboot.h
+@@ -302,6 +302,8 @@ struct cb_cfr {
+   /* CFR_FORM forms[] */
+ };
+ 
++#define CB_TAG_RB_INFO  0x0048
++
+ /* Helpful macros */
+ 
+ #define MEM_RANGE_COUNT(_rec) \
+diff --git a/UefiPayloadPkg/Library/CbParseLib/CbParseLib.c b/UefiPayloadPkg/Library/CbParseLib/CbParseLib.c
+index 4011a4573e..143e318e96 100644
+--- a/UefiPayloadPkg/Library/CbParseLib/CbParseLib.c
++++ b/UefiPayloadPkg/Library/CbParseLib/CbParseLib.c
+@@ -21,6 +21,7 @@
+ #include <IndustryStandard/Acpi.h>
+ #include <Coreboot.h>
+ #include <Guid/CfrSetupMenuGuid.h>
++#include <UniversalPayload/PciRootBridges.h>
+ 
+ /**
+   Convert a packed value from cbuint64 to a UINT64 value.
+@@ -621,6 +622,54 @@ ParseGfxDeviceInfo (
+   return RETURN_NOT_FOUND;
+ }
+ 
++/**
++  Find the RootBridge info.
++
++  @param  SmmStoreInfo       Pointer to the SMMSTORE_INFO structure
++
++  @retval RETURN_SUCCESS     Successfully find the Smm store buffer information.
++  @retval RETURN_NOT_FOUND   Failed to find the Smm store buffer information .
++**/
++RETURN_STATUS
++EFIAPI
++ParseRootBridgeInfo (
++  VOID
++  )
++{
++  RETURN_STATUS                       Status;
++  UNIVERSAL_PAYLOAD_PCI_ROOT_BRIDGES  *BlRootBridgesHob = NULL;
++  UNIVERSAL_PAYLOAD_PCI_ROOT_BRIDGES  *PldRootBridgesHob;
++  struct cb_cbmem_ref  *CbMemRef;
++
++  Status           = RETURN_NOT_FOUND;
++  CbMemRef         = FindCbTag (CB_TAG_RB_INFO);
++
++  if (CbMemRef != NULL) {
++    BlRootBridgesHob = (UNIVERSAL_PAYLOAD_PCI_ROOT_BRIDGES *)(UINTN)CbMemRef->cbmem_addr;
++  }
++
++  if (BlRootBridgesHob != NULL) {
++    //
++    // Migrate bootloader root bridge info hob from bootloader to payload.
++    //
++    PldRootBridgesHob = BuildGuidHob (
++                          &gUniversalPayloadPciRootBridgeInfoGuid,
++                          BlRootBridgesHob->Header.Length
++                          );
++    ASSERT (PldRootBridgesHob != NULL);
++    if (PldRootBridgesHob != NULL) {
++      CopyMem (PldRootBridgesHob, BlRootBridgesHob, BlRootBridgesHob->Header.Length);
++      DEBUG ((DEBUG_INFO, "Create PCI root bridge info guid hob\n"));
++      Status = RETURN_SUCCESS;
++    } else {
++      Status = RETURN_OUT_OF_RESOURCES;
++    }
++  }
++
++  return Status;
++}
++
++
+ /**
+   Parse and handle the misc info provided by bootloader
+ 
+@@ -644,6 +693,10 @@ ParseMiscInfo (
+   CFR_OPTION_FORM                       *CfrSetupMenuForm;
+   CFR_VARBINARY                         *CfrFormName;
+ 
++  if (ParseRootBridgeInfo () != RETURN_SUCCESS) {
++    DEBUG ((DEBUG_INFO, "Failed to create PCI root bridge info guid hob\n"));
++  }
++
+   //
+   // CFR has several CB tags, though these are nested structures,
+   // not for individual table-to-HOB conversion
+diff --git a/UefiPayloadPkg/Library/CbParseLib/CbParseLib.inf b/UefiPayloadPkg/Library/CbParseLib/CbParseLib.inf
+index 282da61428..c73bf66153 100644
+--- a/UefiPayloadPkg/Library/CbParseLib/CbParseLib.inf
++++ b/UefiPayloadPkg/Library/CbParseLib/CbParseLib.inf
+@@ -39,6 +39,7 @@
+ 
+ [Guids]
+   gEfiCfrSetupMenuFormGuid
++  gUniversalPayloadPciRootBridgeInfoGuid
+ 
+ [Pcd]
+   gUefiPayloadPkgTokenSpaceGuid.PcdBootloaderParameter
+-- 
+2.55.0
+

@@ -1,29 +1,35 @@
-From: nuc-bios-build <nbatkins@gmail.com>
-Subject: [PATCH] UsbNetwork: assume media on a point-to-point USB gadget
+From f4537dcedfbeb7e8530a66f6181cc1bbc94c645b Mon Sep 17 00:00:00 2001
+From: appkins <nbatkins@gmail.com>
+Date: Tue, 4 Aug 2026 13:04:05 -0500
+Subject: [PATCH 19/23] UsbNetwork: assume media on a point-to-point gadget
 
-NetworkCommon starts every NIC at CableDetect = 0 and only raises it when it
-catches a CDC NETWORK_CONNECTION/NETWORK_CONNECTED notification. Linux's f_ecm
-emits those only on link-state changes, and the enumeration-time one fires long
-before the UEFI driver binds -- so it is effectively never seen and the first
-Redfish request fails with EFI_NO_MEDIA.
+edk2's USB-net stack starts CableDetect = 0 and only raises it on catching a
+CDC NETWORK_CONNECTION / NETWORK_CONNECTED notification. Linux's f_ecm emits
+those only on link-state changes, and the enumeration-time one fires long
+before the UEFI driver binds, so it is effectively never set: the first
+request over the link fails with EFI_NO_MEDIA.
 
-That model suits a dongle with an RJ45, where "no cable" is a real state worth
-reporting. It does not suit a point-to-point gadget, where enumeration *is* the
-proof of link: if the device is on the bus at all, the BMC is on the other end.
+That model suits a dongle with an RJ45, where the cable really can be absent.
+It does not suit a point-to-point gadget, where enumeration *is* the proof of
+link -- there is no second connector to unplug.
 
-So default it to 1, and stop NETWORK_DISCONNECT from clearing it -- a host
-reset makes f_ecm queue a disconnect that the freshly bound driver reads on the
-next boot, which would otherwise strand the link as unplugged for that whole
-boot (the matching CONNECTED having been emitted while nothing was listening).
+Default the initialiser to 1, and make the flag sticky thereafter: a host
+warm reset makes f_ecm queue a NETWORK_DISCONNECT that the freshly bound
+driver reads as "cable unplugged" for the rest of the boot, the matching
+CONNECTED having been emitted while nothing was listening.
 
-Upstream-Status: Inappropriate [embedded specific]
+Upstream-Status: Inappropriate [platform specific]
 Signed-off-by: nuc-bios-build <nbatkins@gmail.com>
 ---
+ MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/DriverBinding.c | 2 +-
+ MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/PxeFunction.c   | 4 ++--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
 diff --git a/MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/DriverBinding.c b/MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/DriverBinding.c
-index a2a5b82776..c297e13471 100644
+index 3a672a7793..0dff9406e8 100644
 --- a/MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/DriverBinding.c
 +++ b/MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/DriverBinding.c
-@@ -289,7 +289,7 @@ NetworkCommonDriverStart (
+@@ -290,7 +290,7 @@ NetworkCommonDriverStart (
  
    NicDevice->NicInfo.UsbEth         = UsbEth;
    NicDevice->NicInfo.MaxSegmentSize = (UINT16)BulkDataSize;
@@ -54,3 +60,6 @@ index 049618b6c6..70b6c8942a 100644
    } else if ((Nic->Request.Request == USB_CDC_NETWORK_CONNECTION) && (Nic->Request.Value == NETWORK_CONNECTED)) {
      Nic->CableDetect = 1;
    }
+-- 
+2.55.0
+

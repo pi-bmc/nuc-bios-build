@@ -1,0 +1,86 @@
+From c180dfac50d7357b3c4594b0587edd9fda0691a1 Mon Sep 17 00:00:00 2001
+From: Matt DeVillier <matt.devillier@gmail.com>
+Date: Tue, 24 Nov 2020 13:57:46 -0600
+Subject: [PATCH 04/23] MdeModulePkg/UefiBootManagerLib: Add Pcd to prioritize
+ internal devices
+
+Add Pcd to allow configuring internal devices to be prioritized over
+internally-attached USB devices, such as card readers, over SATA, NVMe
+and eMMC drives.
+
+Cc: Jian J Wang <jian.j.wang@intel.com>
+Cc: Liming Gao <gaoliming@byosoft.com.cn>
+Signed-off-by: Matt DeVillier <matt.devillier@gmail.com>
+Signed-off-by: Sean Rhodes <sean@starlabs.systems>
+Change-Id: Ibc9803d67b6cb631a53df80aa1f101752a46e874
+(cherry picked from commit 88c55adfc3485f10885c78512e5510fbd0b47c7b)
+---
+ MdeModulePkg/Library/UefiBootManagerLib/BmBoot.c       | 10 ++++++++--
+ .../Library/UefiBootManagerLib/UefiBootManagerLib.inf  |  1 +
+ MdeModulePkg/MdeModulePkg.dec                          |  4 ++++
+ MdeModulePkg/MdeModulePkg.uni                          |  4 ++++
+ 4 files changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/MdeModulePkg/Library/UefiBootManagerLib/BmBoot.c b/MdeModulePkg/Library/UefiBootManagerLib/BmBoot.c
+index e3d34afc4f..6de55d2934 100644
+--- a/MdeModulePkg/Library/UefiBootManagerLib/BmBoot.c
++++ b/MdeModulePkg/Library/UefiBootManagerLib/BmBoot.c
+@@ -2293,8 +2293,14 @@ BmEnumerateBootOptions (
+       //
+       // Skip the fixed block io then the removable block io
+       //
+-      if (BlkIo->Media->RemovableMedia == ((Removable == 0) ? FALSE : TRUE)) {
+-        continue;
++      if (FixedPcdGetBool (PcdPrioritizeInternal)) {
++        if (BlkIo->Media->RemovableMedia == (Removable == 0)) {
++          continue;
++        }
++      } else {
++        if (BlkIo->Media->RemovableMedia == ((Removable == 0) ? FALSE : TRUE)) {
++          continue;
++        }
+       }
+ 
+       //
+diff --git a/MdeModulePkg/Library/UefiBootManagerLib/UefiBootManagerLib.inf b/MdeModulePkg/Library/UefiBootManagerLib/UefiBootManagerLib.inf
+index cf374285ef..447fda7fea 100644
+--- a/MdeModulePkg/Library/UefiBootManagerLib/UefiBootManagerLib.inf
++++ b/MdeModulePkg/Library/UefiBootManagerLib/UefiBootManagerLib.inf
+@@ -119,3 +119,4 @@
+   gEfiMdeModulePkgTokenSpaceGuid.PcdBootManagerMenuFile                     ## CONSUMES
+   gEfiMdeModulePkgTokenSpaceGuid.PcdDriverHealthConfigureForm               ## SOMETIMES_CONSUMES
+   gEfiMdeModulePkgTokenSpaceGuid.PcdMaxRepairCount                          ## CONSUMES
++  gEfiMdeModulePkgTokenSpaceGuid.PcdPrioritizeInternal
+diff --git a/MdeModulePkg/MdeModulePkg.dec b/MdeModulePkg/MdeModulePkg.dec
+index f6b1a73d70..0f52613088 100644
+--- a/MdeModulePkg/MdeModulePkg.dec
++++ b/MdeModulePkg/MdeModulePkg.dec
+@@ -1794,6 +1794,10 @@
+   # @Prompt SATA device ready for operations timoeout (s), default value is 16s.
+   gEfiMdeModulePkgTokenSpaceGuid.PcdSataDeviceReadyTimeout|16|UINT8|0x00000038
+ 
++  ## Inditicates if internal devices will be prioritized over external devices.
++  # @prompt Prioritize internal devices.
++  gEfiMdeModulePkgTokenSpaceGuid.PcdPrioritizeInternal|FALSE|BOOLEAN|0x00000043
++
+ [PcdsPatchableInModule, PcdsDynamic, PcdsDynamicEx]
+   ## This PCD defines the Console output row. The default value is 25 according to UEFI spec.
+   #  This PCD could be set to 0 then console output would be at max column and max row.
+diff --git a/MdeModulePkg/MdeModulePkg.uni b/MdeModulePkg/MdeModulePkg.uni
+index b4d33ac3c7..2b6a1b6789 100644
+--- a/MdeModulePkg/MdeModulePkg.uni
++++ b/MdeModulePkg/MdeModulePkg.uni
+@@ -1177,6 +1177,10 @@
+ 
+ #string STR_gEfiMdeModulePkgTokenSpaceGuid_PcdSdMmcGenericTimeoutValue_HELP   #language en-US "Indicates the default timeout value for SD/MMC Host Controller operations in microseconds."
+ 
++#string STR_gEfiMdeModulePkgTokenSpaceGuid_PcdPrioritizeInternal_PROMPT #language en-US "Enable booting from internal devices before external devices."
++
++#string STR_gEfiMdeModulePkgTokenSpaceGuid_PcdPrioritizeInternal_HELP   #language en-US "Indicates the if internal devices will be prioritized in boot order."
++
+ #string STR_gEfiMdeModulePkgTokenSpaceGuid_PcdCodRelocationDevPath_PROMPT  #language en-US "Capsule On Disk relocation device path."
+ 
+ #string STR_gEfiMdeModulePkgTokenSpaceGuid_PcdCodRelocationDevPath_HELP  #language en-US   "Full device path of platform specific device to store Capsule On Disk temp relocation file.<BR>"
+-- 
+2.55.0
+

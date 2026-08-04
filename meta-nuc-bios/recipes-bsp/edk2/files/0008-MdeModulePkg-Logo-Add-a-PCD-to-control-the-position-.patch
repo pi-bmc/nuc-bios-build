@@ -1,0 +1,137 @@
+From 37c875ae8d8327b1c552eba38f023fe423ad359f Mon Sep 17 00:00:00 2001
+From: Sean Rhodes <sean@starlabs.systems>
+Date: Fri, 15 Jul 2022 16:20:43 +0100
+Subject: [PATCH 08/23] MdeModulePkg/Logo: Add a PCD to control the position of
+ the Logo
+
+When set to true, the Logo is positioned according to the BGRT
+specification, 38.2% from the top of the screen. When set to false,
+no behaviour is changed and the logo is positioned centrally.
+
+Cc: Zhichao Gao <zhichao.gao@intel.com>
+Cc: Ray Ni <ray.ni@intel.com>
+Cc: Jian J Wang <jian.j.wang@intel.com>
+Cc: Liming Gao <gaoliming@byosoft.com.cn>
+Signed-off-by: Sean Rhodes <sean@starlabs.systems>
+Change-Id: Ia8b63f7490cd918cac5e0235cb5d97a1a84780e6
+Signed-off-by: Matt DeVillier <matt.devillier@gmail.com>
+(cherry picked from commit 387aeaec2d0d13fab7e4056a837662c2e474ded1)
+---
+ MdeModulePkg/Library/BootLogoLib/BootLogoLib.inf | 3 +++
+ MdeModulePkg/Logo/Logo.c                         | 5 +++++
+ MdeModulePkg/Logo/LogoDxe.inf                    | 4 ++++
+ MdeModulePkg/MdeModulePkg.dec                    | 6 ++++++
+ MdeModulePkg/MdeModulePkg.uni                    | 5 +++++
+ UefiPayloadPkg/UefiPayloadPkg.dsc                | 3 +++
+ 6 files changed, 26 insertions(+)
+
+diff --git a/MdeModulePkg/Library/BootLogoLib/BootLogoLib.inf b/MdeModulePkg/Library/BootLogoLib/BootLogoLib.inf
+index 03fd70451b..9020f75337 100644
+--- a/MdeModulePkg/Library/BootLogoLib/BootLogoLib.inf
++++ b/MdeModulePkg/Library/BootLogoLib/BootLogoLib.inf
+@@ -46,3 +46,6 @@
+   gEdkiiBootLogo2ProtocolGuid                   ## SOMETIMES_CONSUMES
+   gEfiUserManagerProtocolGuid                   ## CONSUMES
+   gEdkiiPlatformLogoProtocolGuid                ## CONSUMES
++
++[Pcd]
++  gEfiMdeModulePkgTokenSpaceGuid.PcdFollowBGRTSpecification ## CONSUMES
+diff --git a/MdeModulePkg/Logo/Logo.c b/MdeModulePkg/Logo/Logo.c
+index 8ab874d2da..73546b32f4 100644
+--- a/MdeModulePkg/Logo/Logo.c
++++ b/MdeModulePkg/Logo/Logo.c
+@@ -13,6 +13,7 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
+ #include <Protocol/HiiPackageList.h>
+ #include <Library/UefiBootServicesTableLib.h>
+ #include <Library/DebugLib.h>
++#include <Library/PcdLib.h>
+ 
+ typedef struct {
+   EFI_IMAGE_ID                             ImageId;
+@@ -69,6 +70,10 @@ GetImage (
+     return EFI_NOT_FOUND;
+   }
+ 
++  if (FixedPcdGetBool (PcdFollowBGRTSpecification)) {
++    mLogos[Current].Attribute = EdkiiPlatformLogoDisplayAttributeBGRTSpecification;
++  }
++
+   (*Instance)++;
+   *Attribute = mLogos[Current].Attribute;
+   *OffsetX   = mLogos[Current].OffsetX;
+diff --git a/MdeModulePkg/Logo/LogoDxe.inf b/MdeModulePkg/Logo/LogoDxe.inf
+index 41215d25d8..c5c8ad0bcf 100644
+--- a/MdeModulePkg/Logo/LogoDxe.inf
++++ b/MdeModulePkg/Logo/LogoDxe.inf
+@@ -41,6 +41,7 @@
+   UefiBootServicesTableLib
+   UefiDriverEntryPoint
+   DebugLib
++  PcdLib
+ 
+ [Protocols]
+   gEfiHiiDatabaseProtocolGuid        ## CONSUMES
+@@ -48,6 +49,9 @@
+   gEfiHiiPackageListProtocolGuid     ## PRODUCES CONSUMES
+   gEdkiiPlatformLogoProtocolGuid     ## PRODUCES
+ 
++[Pcd]
++  gEfiMdeModulePkgTokenSpaceGuid.PcdFollowBGRTSpecification ## CONSUMES
++
+ [Depex]
+   gEfiHiiDatabaseProtocolGuid AND
+   gEfiHiiImageExProtocolGuid
+diff --git a/MdeModulePkg/MdeModulePkg.dec b/MdeModulePkg/MdeModulePkg.dec
+index 0f52613088..039c065722 100644
+--- a/MdeModulePkg/MdeModulePkg.dec
++++ b/MdeModulePkg/MdeModulePkg.dec
+@@ -2376,6 +2376,12 @@
+   # @Prompt PCI CRS timeout in seconds.
+   gEfiMdeModulePkgTokenSpaceGuid.PcdPciCrsTimeoutSeconds|0|UINT32|0x1000002B
+ 
++  ## This PCD sets the position of the Boot Logo.
++  #   TRUE  - The Logo is positioned according to the BGRT specification.
++  #   FALSE - The logo is positioned in the center of the screen.
++  # @ Prompt This position of the boot logo
++  gEfiMdeModulePkgTokenSpaceGuid.PcdFollowBGRTSpecification|FALSE|BOOLEAN|0x10000036
++
+ [PcdsPatchableInModule]
+   ## Specify memory size with page number for PEI code when
+   #  Loading Module at Fixed Address feature is enabled.
+diff --git a/MdeModulePkg/MdeModulePkg.uni b/MdeModulePkg/MdeModulePkg.uni
+index 2b6a1b6789..ac850bdbd7 100644
+--- a/MdeModulePkg/MdeModulePkg.uni
++++ b/MdeModulePkg/MdeModulePkg.uni
+@@ -1361,3 +1361,8 @@
+ #string STR_gEfiMdeModulePkgTokenSpaceGuid_PcdPcieResizableBarMaxSize_HELP   #language en-US "Set platform limit for max size to pick from Resizable BAR Capability register.<BR><BR>\n"
+                                                                                              "Decimal value 'n' is interpreted as 2^(n+20), which means 0=>1MB, 1=>2MB, 2=>4MB, 3=>8MB, etc.<BR>\n"
+                                                                                              "Maximum reasonable size to set is half of processor address with, i.e. address width - 1.<BR>\n"
++
++#string STR_gEfiMdeModulePkgTokenSpaceGuid_PcdFollowBGRTSpecification_PROMPT #language en-US "The position of the Boot Logo"
++
++#string STR_gEfiMdeModulePkgTokenSpaceGuid_PcdFollowBGRTSpecification_HELP   #language en-US "Sets the position of the Logo. When set to true, the Logo is positioned according to the"
++                                                                                             " BGRT specification, 38.2% from the top of the screen."
+diff --git a/UefiPayloadPkg/UefiPayloadPkg.dsc b/UefiPayloadPkg/UefiPayloadPkg.dsc
+index 0231114d7d..ec2222fee1 100644
+--- a/UefiPayloadPkg/UefiPayloadPkg.dsc
++++ b/UefiPayloadPkg/UefiPayloadPkg.dsc
+@@ -48,6 +48,7 @@
+   DEFINE NVME_ENABLE                  = TRUE
+   DEFINE LOCKBOX_SUPPORT              = FALSE
+   DEFINE LOAD_OPTION_ROMS             = FALSE
++  DEFINE FOLLOW_BGRT_SPEC             = FALSE
+ 
+   #
+   # Capsule updates
+@@ -631,6 +632,8 @@
+ 
+   gUefiPayloadPkgTokenSpaceGuid.PcdBootManagerEscape|$(BOOT_MANAGER_ESCAPE)
+ 
++  gEfiMdeModulePkgTokenSpaceGuid.PcdFollowBGRTSpecification|$(FOLLOW_BGRT_SPEC)
++
+   gEfiMdePkgTokenSpaceGuid.PcdMaximumUnicodeStringLength|1800000
+ 
+   ## Whether FMP capsules are enabled.
+-- 
+2.55.0
+

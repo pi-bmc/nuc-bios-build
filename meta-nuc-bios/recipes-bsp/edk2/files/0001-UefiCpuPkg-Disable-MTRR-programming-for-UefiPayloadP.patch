@@ -1,0 +1,98 @@
+From 4bb790c2dd0a90e24099c153d6c4e4f9b5f22a8f Mon Sep 17 00:00:00 2001
+From: Patrick Rudolph <patrick.rudolph@9elements.com>
+Date: Tue, 8 Sep 2020 09:40:41 +0200
+Subject: [PATCH 01/23] UefiCpuPkg: Disable MTRR programming for UefiPayloadPkg
+
+The MTRRs have already been programmed by FSB.
+
+This is necessary on some older platforms, such as Intel Braswell.
+
+Change-Id: I8c6e7657b789edac8ee83a89318209a598712db8
+Signed-off-by: Patrick Rudolph <patrick.rudolph@9elements.com>
+Signed-off-by: Matt DeVillier <matt.devillier@gmail.com>
+(cherry picked from commit 9515a6e7f0a315b7957a668a6f355f7d1d36d71d)
+---
+ UefiCpuPkg/Library/MtrrLib/MtrrLib.c   | 4 ++++
+ UefiCpuPkg/Library/MtrrLib/MtrrLib.inf | 2 +-
+ UefiCpuPkg/UefiCpuPkg.dec              | 4 ++++
+ UefiCpuPkg/UefiCpuPkg.uni              | 8 ++++++--
+ UefiPayloadPkg/UefiPayloadPkg.dsc      | 3 +++
+ 5 files changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/UefiCpuPkg/Library/MtrrLib/MtrrLib.c b/UefiCpuPkg/Library/MtrrLib/MtrrLib.c
+index df3ef3fe96..a523ace8bf 100644
+--- a/UefiCpuPkg/Library/MtrrLib/MtrrLib.c
++++ b/UefiCpuPkg/Library/MtrrLib/MtrrLib.c
+@@ -161,6 +161,10 @@ MtrrLibIsMtrrSupported (
+   CPUID_VERSION_INFO_EDX     Edx;
+   MSR_IA32_MTRRCAP_REGISTER  MtrrCap;
+ 
++  if (PcdGetBool(PcdCpuDisableMtrrProgramming)) {
++    return FALSE;
++  }
++
+   //
+   // MTRR is not supported in TD-Guest or any SEV guest.
+   //
+diff --git a/UefiCpuPkg/Library/MtrrLib/MtrrLib.inf b/UefiCpuPkg/Library/MtrrLib/MtrrLib.inf
+index 4c9ea2def3..611fdc7047 100644
+--- a/UefiCpuPkg/Library/MtrrLib/MtrrLib.inf
++++ b/UefiCpuPkg/Library/MtrrLib/MtrrLib.inf
+@@ -37,4 +37,4 @@
+ 
+ [Pcd]
+   gUefiCpuPkgTokenSpaceGuid.PcdCpuNumberOfReservedVariableMtrrs   ## SOMETIMES_CONSUMES
+-
++  gUefiCpuPkgTokenSpaceGuid.PcdCpuDisableMtrrProgramming ## CONSUMES
+diff --git a/UefiCpuPkg/UefiCpuPkg.dec b/UefiCpuPkg/UefiCpuPkg.dec
+index 05baae1445..0a4dbf8f19 100644
+--- a/UefiCpuPkg/UefiCpuPkg.dec
++++ b/UefiCpuPkg/UefiCpuPkg.dec
+@@ -328,6 +328,10 @@
+   # @Prompt SMM Code Access Check.
+   gUefiCpuPkgTokenSpaceGuid.PcdCpuSmmCodeAccessCheckEnable|TRUE|BOOLEAN|0x60000013
+ 
++  ## Disables MTRR programming in case it's already programmed by FSB.
++  # @Prompt Disable MTRR programming.
++  gUefiCpuPkgTokenSpaceGuid.PcdCpuDisableMtrrProgramming|FALSE|BOOLEAN|0x00000017
++
+   ## Specifies the number of variable MTRRs reserved for OS use. The default number of
+   #  MTRRs reserved for OS use is 2.
+   # @Prompt Number of reserved variable MTRRs.
+diff --git a/UefiCpuPkg/UefiCpuPkg.uni b/UefiCpuPkg/UefiCpuPkg.uni
+index 25a7176194..81f9525860 100644
+--- a/UefiCpuPkg/UefiCpuPkg.uni
++++ b/UefiCpuPkg/UefiCpuPkg.uni
+@@ -156,9 +156,13 @@
+ 
+ #string STR_gUefiCpuPkgTokenSpaceGuid_PcdCpuHotPlugDataAddress_HELP  #language en-US "Contains the pointer to a CPU Hot Plug Data structure if CPU hot-plug is supported."
+ 
+-#string STR_gUefiCpuPkgTokenSpaceGuid_PcdCpuNumberOfReservedVariableMtrrs_PROMPT  #language en-US "Number of reserved variable MTRRs"
++#string STR_gUefiCpuPkgTokenSpaceGuid_PcdCpuDisableMtrrProgramming_PROMPT  #language en-US "Number of reserved variable MTRRs"
+ 
+-#string STR_gUefiCpuPkgTokenSpaceGuid_PcdCpuNumberOfReservedVariableMtrrs_HELP  #language en-US "Specifies the number of variable MTRRs reserved for OS use."
++#string STR_gUefiCpuPkgTokenSpaceGuid_PcdCpuDisableMtrrProgramming_HELP  #language en-US "Specifies the number of variable MTRRs reserved for OS use."
++
++#string STR_gUefiCpuPkgTokenSpaceGuid_PcdCpuNumberOfReservedVariableMtrrs_PROMPT  #language en-US "Disable MTRR programming."
++
++#string STR_gUefiCpuPkgTokenSpaceGuid_PcdCpuNumberOfReservedVariableMtrrs_HELP  #language en-US "Disables MTRR programming in case it's already programmed by FSB."
+ 
+ #string STR_gUefiCpuPkgTokenSpaceGuid_PcdCpuApLoopMode_PROMPT  #language en-US "The AP wait loop state"
+ 
+diff --git a/UefiPayloadPkg/UefiPayloadPkg.dsc b/UefiPayloadPkg/UefiPayloadPkg.dsc
+index 34fb690d17..1b9702f665 100644
+--- a/UefiPayloadPkg/UefiPayloadPkg.dsc
++++ b/UefiPayloadPkg/UefiPayloadPkg.dsc
+@@ -669,6 +669,9 @@
+   ## Whether allows PCI RB to allocate DMA memory above 4GB
+   gUefiPayloadPkgTokenSpaceGuid.PcdPciAllocateMemoryAbove4GB|FALSE
+ 
++  # Disable MTRR programming
++  gUefiCpuPkgTokenSpaceGuid.PcdCpuDisableMtrrProgramming|TRUE
++
+ [PcdsFixedAtBuild.AARCH64]
+   # System Memory Base -- fixed at 0x4000_0000
+   gArmTokenSpaceGuid.PcdSystemMemoryBase|0x40000000
+-- 
+2.55.0
+

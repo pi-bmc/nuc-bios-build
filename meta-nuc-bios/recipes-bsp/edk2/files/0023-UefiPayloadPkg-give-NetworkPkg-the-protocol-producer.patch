@@ -1,0 +1,117 @@
+From 814d2fc0705a2fc1b4c43182686c5646869f13f8 Mon Sep 17 00:00:00 2001
+From: appkins <nbatkins@gmail.com>
+Date: Tue, 4 Aug 2026 13:06:46 -0500
+Subject: [PATCH 23/23] UefiPayloadPkg: give NetworkPkg the protocol producers
+ its depex requires
+
+With NETWORK_DRIVER_ENABLE=TRUE the network stack builds, lands in the DXE FV,
+and is then partly or wholly never dispatched. Nothing reports an error.
+
+Two producers are missing, and UefiPayloadPkg has the same bug for both: it
+lists them only under [Components.AARCH64], and places neither in a firmware
+volume on any architecture. So on X64 they are not even built, no protocol
+appears, and the DXE dispatcher quietly skips every driver that depexes on
+one.
+
+  EFI_RNG_PROTOCOL (RngDxe)
+
+    DxeNetLib carries [Depex] gEfiRngProtocolGuid and every NetworkPkg driver
+    links it, so the entire stack inherits it -- SnpDxe's generated depex is a
+    13-term AND ending in that GUID. Measured on hardware: of 119 modules in
+    the DXE FV, the twelve NetworkPkg drivers plus RedfishRestExDxe,
+    RedfishDiscoverDxe, RedfishConfigHandlerDriver, RedfishHttpDxe and
+    RedfishFeatureCoreDxe never emitted a "Loading driver" line, while their
+    neighbours either side of them in the FV all did. No SNP, so no PXE boot
+    option and nothing for a chainloaded snp.efi to bind; no REST EX, so no
+    Redfish either.
+
+  EFI_HASH2_SERVICE_BINDING_PROTOCOL (Hash2DxeCrypto)
+
+    TcpDxe alone carries [Depex] gEfiHash2ServiceBindingProtocolGuid, for TCP
+    initial sequence numbers. Losing just TcpDxe is the subtler failure: SNP,
+    MNP, IP4, DHCP4, MTFTP4, HTTP and the PXE stack all still come up, so
+    netboot works and the log looks healthy -- but RedfishDiscoverDxe's
+    TestForRequiredProtocols() wants TCP4 *and* REST EX service binding on the
+    same controller handle, so Supported() returns EFI_UNSUPPORTED everywhere,
+    discovery is never started, and the feature drivers report
+
+        RedfishCollectionFeatureCallback: no Redfish service configured
+
+Neither module is AArch64-specific. RngDxe has [Sources.IA32, Sources.X64]
+backed by RDRAND and [Depex] TRUE, and UefiPayloadPkg already resolves RngLib
+to BaseRngLib; Hash2DxeCrypto is architecture-neutral over BaseCryptLib. Build
+both for X64 and place them in the DXE FV, gated on NETWORK_DRIVER_ENABLE so
+platforms with the stack switched off pay nothing.
+
+Upstream-Status: Pending
+Signed-off-by: nuc-bios-build <nbatkins@gmail.com>
+---
+ UefiPayloadPkg/UefiPayloadPkg.dsc | 28 ++++++++++++++++++++++++++++
+ UefiPayloadPkg/UefiPayloadPkg.fdf | 12 ++++++++++++
+ 2 files changed, 40 insertions(+)
+
+diff --git a/UefiPayloadPkg/UefiPayloadPkg.dsc b/UefiPayloadPkg/UefiPayloadPkg.dsc
+index 3aaedf0115..714cdbb033 100644
+--- a/UefiPayloadPkg/UefiPayloadPkg.dsc
++++ b/UefiPayloadPkg/UefiPayloadPkg.dsc
+@@ -999,6 +999,34 @@
+   DEFINE PLATFORMX64_ENABLE = TRUE
+   !include NetworkPkg/Network.dsc.inc
+ 
++#
++# The two protocol producers NetworkPkg depexes on, without which the stack
++# above builds and then never dispatches. Both are listed by UefiPayloadPkg
++# only under [Components.AARCH64], and neither is placed in a firmware volume
++# on any architecture -- so on X64 the drivers land in the DXE FV and the
++# dispatcher silently skips them. Neither is AArch64-specific.
++#
++#   EFI_RNG_PROTOCOL   DxeNetLib carries [Depex] gEfiRngProtocolGuid and every
++#                      NetworkPkg driver links it, so the whole stack inherits
++#                      it. Without this there is no SNP, no PXE boot option,
++#                      and no REST EX for Redfish to ride on. RngDxe has
++#                      [Sources.IA32, Sources.X64] backed by RDRAND, [Depex]
++#                      TRUE, and RngLib is already resolved to BaseRngLib.
++#
++#   EFI_HASH2_...      TcpDxe alone carries [Depex]
++#                      gEfiHash2ServiceBindingProtocolGuid, for TCP initial
++#                      sequence numbers. Losing just TcpDxe is the subtler
++#                      failure: SNP, IP4, HTTP and PXE all still come up, so
++#                      netboot works and nothing looks wrong -- but
++#                      RedfishDiscoverDxe requires TCP4 *and* REST EX service
++#                      binding on the same controller handle, so discovery
++#                      quietly finds nothing and the Redfish feature drivers
++#                      report "no Redfish service configured".
++#
++[Components.X64]
++  SecurityPkg/RandomNumberGenerator/RngDxe/RngDxe.inf
++  SecurityPkg/Hash2DxeCrypto/Hash2DxeCrypto.inf
++
+ #
+ # Redfish host interface (DSP0270) over the BMC's USB CDC-ECM gadget.
+ #
+diff --git a/UefiPayloadPkg/UefiPayloadPkg.fdf b/UefiPayloadPkg/UefiPayloadPkg.fdf
+index 6474cb0f55..ed7e59e8bd 100644
+--- a/UefiPayloadPkg/UefiPayloadPkg.fdf
++++ b/UefiPayloadPkg/UefiPayloadPkg.fdf
+@@ -355,6 +355,18 @@ INF MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
+ # UEFI network modules
+ #
+ !if $(NETWORK_DRIVER_ENABLE) == TRUE
++  #
++  # EFI_RNG_PROTOCOL producer. Every NetworkPkg driver links DxeNetLib, which
++  # carries [Depex] gEfiRngProtocolGuid, so without this none of them dispatch.
++  #
++  INF SecurityPkg/RandomNumberGenerator/RngDxe/RngDxe.inf
++  #
++  # EFI_HASH2_SERVICE_BINDING_PROTOCOL producer, which only TcpDxe depexes on.
++  # Without it TcpDxe alone is skipped -- and RedfishDiscoverDxe needs TCP4
++  # service binding alongside REST EX on the same handle, so Redfish discovery
++  # silently finds nothing while the rest of the network stack looks healthy.
++  #
++  INF SecurityPkg/Hash2DxeCrypto/Hash2DxeCrypto.inf
+   !include NetworkPkg/Network.fdf.inc
+ #
+ # UNDI/SNP for the onboard LOM. Nothing else in this payload publishes
+-- 
+2.55.0
+

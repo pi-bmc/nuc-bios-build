@@ -1,0 +1,49 @@
+From a19edc1ee42b7ff78bb143221f78a9d1cf1a6c93 Mon Sep 17 00:00:00 2001
+From: Sean Rhodes <sean@starlabs.systems>
+Date: Wed, 11 Mar 2026 10:27:59 +0000
+Subject: [PATCH 17/23] UefiPayloadPkg: align DXE images for page protections
+
+Apply -z common-page-size=0x1000 to IA32/X64 DXE core, DXE
+drivers, UEFI drivers and UEFI applications in UefiPayloadPkg.
+Apply the corresponding 64 KiB alignment to AARCH64 DXE images.
+
+UefiPayload already links DXE runtime drivers with an architecture-
+appropriate common page size, but other DXE images still inherit the
+toolchain default. When that default is larger, PE/COFF sections are
+not page-aligned and DXE Core cannot apply page-granular image
+protections such as NX.
+
+Align the non-runtime DXE images the same way so UefiPayload opts into
+image protection consistently across supported architectures. Only SEC
+can be IA32 in UefiPayload; DXE Core and onward are always 64-bit.
+
+Signed-off-by: Sean Rhodes <sean@starlabs.systems>
+(cherry picked from commit 3dee8c91589a578d98feb580d76ce7f9bf12afbe)
+---
+ UefiPayloadPkg/UefiPayloadPkg.dsc | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/UefiPayloadPkg/UefiPayloadPkg.dsc b/UefiPayloadPkg/UefiPayloadPkg.dsc
+index 2243507bb5..277de0fe4f 100644
+--- a/UefiPayloadPkg/UefiPayloadPkg.dsc
++++ b/UefiPayloadPkg/UefiPayloadPkg.dsc
+@@ -204,6 +204,16 @@
+   CLANGPDB:*_*_*_DLINK_FLAGS = /ALIGN:4096
+   MSFT:*_*_*_DLINK_FLAGS     = /ALIGN:4096
+ 
++# Force PE/COFF sections to be aligned at 4KB boundaries so DXE Core can
++# apply page-level image protection, including NX, to IA32/X64 DXE images.
++[BuildOptions.IA32.EDKII.DXE_CORE, BuildOptions.X64.EDKII.DXE_CORE, BuildOptions.IA32.EDKII.DXE_DRIVER, BuildOptions.X64.EDKII.DXE_DRIVER, BuildOptions.IA32.EDKII.UEFI_DRIVER, BuildOptions.X64.EDKII.UEFI_DRIVER, BuildOptions.IA32.EDKII.UEFI_APPLICATION, BuildOptions.X64.EDKII.UEFI_APPLICATION]
++  GCC:*_*_*_DLINK_FLAGS      = -z common-page-size=0x1000
++
++# Force PE/COFF sections to be aligned at 64KB boundaries so DXE Core can
++# apply page-level image protection, including NX, to AARCH64 DXE images.
++[BuildOptions.AARCH64.EDKII.DXE_CORE, BuildOptions.AARCH64.EDKII.DXE_DRIVER, BuildOptions.AARCH64.EDKII.UEFI_DRIVER, BuildOptions.AARCH64.EDKII.UEFI_APPLICATION]
++  GCC:*_*_*_DLINK_FLAGS      = -z common-page-size=0x10000
++
+ [BuildOptions.IA32.EDKII.DXE_RUNTIME_DRIVER, BuildOptions.X64.EDKII.DXE_RUNTIME_DRIVER]
+   GCC:*_*_*_DLINK_FLAGS      = -z common-page-size=0x1000
+ 
+-- 
+2.55.0
+

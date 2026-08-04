@@ -1,0 +1,51 @@
+From 1d91c962bb1f38df76f919bc23c7414b597f4502 Mon Sep 17 00:00:00 2001
+From: Matt DeVillier <matt.devillier@gmail.com>
+Date: Fri, 11 Jul 2025 11:47:12 -0500
+Subject: [PATCH 14/23] UefipayloadPkg/SmmStoreLib: Set capabilities for store
+ region
+
+Setting the EFI_MEMORY_RUNTIME attribute for the smmstore region will
+fail if the capability hasn't been set previously, so do that just
+in case. Fixes a failure to init on the Lenovo T480.
+
+Signed-off-by: Matt DeVillier <matt.devillier@gmail.com>
+(cherry picked from commit 16298ca0a8727e6e71e028ba4b7c85d8b3e76a27)
+---
+ UefiPayloadPkg/Library/SmmStoreLib/SmmStore.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/UefiPayloadPkg/Library/SmmStoreLib/SmmStore.c b/UefiPayloadPkg/Library/SmmStoreLib/SmmStore.c
+index a0cde79e4d..a5754a4d5c 100644
+--- a/UefiPayloadPkg/Library/SmmStoreLib/SmmStore.c
++++ b/UefiPayloadPkg/Library/SmmStoreLib/SmmStore.c
+@@ -543,6 +543,16 @@ SmmStoreLibInitialize (
+                     );
+     ASSERT_EFI_ERROR (Status);
+   } else {
++    Status = gDS->SetMemorySpaceCapabilities (
++      mSmmStoreInfo->MmioAddress,
++      mSmmStoreInfo->NumBlocks * mSmmStoreInfo->BlockSize,
++      GcdDescriptor.Capabilities | EFI_MEMORY_RUNTIME
++      );
++    ASSERT_EFI_ERROR (Status);
++    if (EFI_ERROR (Status)) {
++      DEBUG ((DEBUG_INFO, "%a:%d SetMemorySpaceCapabilities failed\n", __func__, __LINE__));
++      return Status;
++    }
+     //
+     // Mark as runtime service
+     //
+@@ -552,6 +562,10 @@ SmmStoreLibInitialize (
+       GcdDescriptor.Attributes | EFI_MEMORY_RUNTIME
+       );
+     ASSERT_EFI_ERROR (Status);
++    if (EFI_ERROR (Status)) {
++      DEBUG ((DEBUG_INFO, "%a:%d SetMemorySpaceAttributes failed\n", __func__, __LINE__));
++      return Status;
++    }
+   }
+ 
+   return EFI_SUCCESS;
+-- 
+2.55.0
+

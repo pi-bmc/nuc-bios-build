@@ -1,0 +1,114 @@
+From 144b9ff46432e8b533f44b5ef876f3bdd3306cad Mon Sep 17 00:00:00 2001
+From: Matt DeVillier <matt.devillier@gmail.com>
+Date: Tue, 11 Feb 2025 13:16:06 -0600
+Subject: [PATCH 12/23] UefiCpuPkg/CpuDxe: Gate EFI Memory Attribute Protocol
+ behind a PCD
+
+DxeCore CoreFreePages() consults gEfiMemoryAttributeProtocolGuid and
+leaks freed pages when GetMemoryAttributes() returns EFI_NO_MAPPING or
+reports RO/RP. CpuDxe cannot accurately describe the coarse/mixed page
+tables handed off by coreboot, so merely publishing the protocol makes
+the payload leak memory.
+
+Add a FixedAtBuild PCD, PcdProduceMemoryAttributeProtocol (default TRUE,
+matching current behavior), and gate InstallEfiMemoryAttributeProtocol()
+on it. UefiPayloadPkg sets it FALSE. This keeps CpuPageTable byte-identical
+to upstream instead of carrying a full revert of the protocol, and remains
+upstreamable as a platform knob.
+
+Signed-off-by: Matt DeVillier <matt.devillier@gmail.com>
+(cherry picked from commit 29c488003ccd76fdf252f87f46eadeff516b2787)
+---
+ UefiCpuPkg/CpuDxe/CpuDxe.c        |  6 +++++-
+ UefiCpuPkg/CpuDxe/CpuDxe.inf      |  3 ++-
+ UefiCpuPkg/UefiCpuPkg.dec         | 12 ++++++++++++
+ UefiPayloadPkg/UefiPayloadPkg.dsc |  5 +++++
+ 4 files changed, 24 insertions(+), 2 deletions(-)
+
+diff --git a/UefiCpuPkg/CpuDxe/CpuDxe.c b/UefiCpuPkg/CpuDxe/CpuDxe.c
+index a7a1996d7f..0cfb9d8f01 100644
+--- a/UefiCpuPkg/CpuDxe/CpuDxe.c
++++ b/UefiCpuPkg/CpuDxe/CpuDxe.c
+@@ -6,6 +6,8 @@
+ 
+ **/
+ 
++#include <Library/PcdLib.h>
++
+ #include "CpuDxe.h"
+ #include "CpuMp.h"
+ #include "CpuPageTable.h"
+@@ -1031,7 +1033,9 @@ InitializeCpu (
+   //
+   // Install EFI memory attribute Protocol
+   //
+-  InstallEfiMemoryAttributeProtocol (mCpuHandle);
++  if (PcdGetBool (PcdProduceMemoryAttributeProtocol)) {
++    InstallEfiMemoryAttributeProtocol (mCpuHandle);
++  }
+ 
+   //
+   // Refresh GCD memory space map according to MTRR value.
+diff --git a/UefiCpuPkg/CpuDxe/CpuDxe.inf b/UefiCpuPkg/CpuDxe/CpuDxe.inf
+index 7d38840e22..24403d0c35 100644
+--- a/UefiCpuPkg/CpuDxe/CpuDxe.inf
++++ b/UefiCpuPkg/CpuDxe/CpuDxe.inf
+@@ -75,7 +75,7 @@
+ 
+ [Protocols]
+   gEfiCpuArchProtocolGuid                       ## PRODUCES
+-  gEfiMemoryAttributeProtocolGuid               ## PRODUCES
++  gEfiMemoryAttributeProtocolGuid               ## SOMETIMES_PRODUCES
+   gEfiMpServiceProtocolGuid                     ## PRODUCES
+   gEfiSmmBase2ProtocolGuid                      ## SOMETIMES_CONSUMES
+ 
+@@ -94,6 +94,7 @@
+   gEfiMdeModulePkgTokenSpaceGuid.PcdTdxSharedBitMask                    ## CONSUMES
+   gUefiCpuPkgTokenSpaceGuid.PcdCpuStackSwitchExceptionList              ## CONSUMES
+   gUefiCpuPkgTokenSpaceGuid.PcdCpuKnownGoodStackSize                    ## CONSUMES
++  gUefiCpuPkgTokenSpaceGuid.PcdProduceMemoryAttributeProtocol           ## CONSUMES
+ 
+ [Pcd.LoongArch64]
+   gUefiCpuPkgTokenSpaceGuid.PcdLoongArchExceptionVectorBaseAddress      ## CONSUMES
+diff --git a/UefiCpuPkg/UefiCpuPkg.dec b/UefiCpuPkg/UefiCpuPkg.dec
+index 0a4dbf8f19..5d67281bd0 100644
+--- a/UefiCpuPkg/UefiCpuPkg.dec
++++ b/UefiCpuPkg/UefiCpuPkg.dec
+@@ -289,6 +289,18 @@
+   # @Prompt Configure max mapping address in page table before Temp Ram Exit.
+   gUefiCpuPkgTokenSpaceGuid.PcdMaxMappingAddressBeforeTempRamExit|0xFFFFFFFFFFFFFFFF|UINT64|0x30002008
+ 
++  ## Indicates whether CpuDxe produces the EFI Memory Attribute Protocol.
++  #  Platforms that hand off page tables from an earlier boot stage (e.g. a
++  #  coreboot/UEFI payload) may map memory with coarse or mixed attributes that
++  #  the protocol implementation cannot describe accurately. Because DxeCore
++  #  consults the protocol in CoreFreePages(), an inaccurate GetMemoryAttributes()
++  #  result causes freed pages to be leaked. Such platforms can set this to FALSE
++  #  to keep the protocol unpublished.<BR><BR>
++  #   TRUE  - CpuDxe installs gEfiMemoryAttributeProtocolGuid.<BR>
++  #   FALSE - CpuDxe does not install the protocol.<BR>
++  # @Prompt Produce the EFI Memory Attribute Protocol.
++  gUefiCpuPkgTokenSpaceGuid.PcdProduceMemoryAttributeProtocol|TRUE|BOOLEAN|0x30002009
++
+ [PcdsFixedAtBuild, PcdsPatchableInModule]
+   ## This value is the CPU Local APIC base address, which aligns the address on a 4-KByte boundary.
+   # @Prompt Configure base address of CPU Local APIC
+diff --git a/UefiPayloadPkg/UefiPayloadPkg.dsc b/UefiPayloadPkg/UefiPayloadPkg.dsc
+index 7ddea151d4..2243507bb5 100644
+--- a/UefiPayloadPkg/UefiPayloadPkg.dsc
++++ b/UefiPayloadPkg/UefiPayloadPkg.dsc
+@@ -684,6 +684,11 @@
+   # Disable MTRR programming
+   gUefiCpuPkgTokenSpaceGuid.PcdCpuDisableMtrrProgramming|TRUE
+ 
++  # Do not publish the EFI Memory Attribute Protocol: the page tables handed off
++  # by coreboot use coarse/mixed attributes that CpuDxe cannot report accurately,
++  # which would cause DxeCore CoreFreePages() to leak freed pages.
++  gUefiCpuPkgTokenSpaceGuid.PcdProduceMemoryAttributeProtocol|FALSE
++
+ [PcdsFixedAtBuild.AARCH64]
+   # System Memory Base -- fixed at 0x4000_0000
+   gArmTokenSpaceGuid.PcdSystemMemoryBase|0x40000000
+-- 
+2.55.0
+

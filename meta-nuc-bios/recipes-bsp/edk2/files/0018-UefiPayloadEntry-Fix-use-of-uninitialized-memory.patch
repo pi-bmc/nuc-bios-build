@@ -1,0 +1,162 @@
+From 2a0b407d91c2695ce179ec96604697e2c216321f Mon Sep 17 00:00:00 2001
+From: Patrick Rudolph <patrick.rudolph@9elements.com>
+Date: Wed, 6 May 2026 08:08:01 +0200
+Subject: [PATCH 18/23] UefiPayloadEntry: Fix use of uninitialized memory
+
+In coreboot the SMBIOS table generation is optional. When no
+SMBIOS tables where found UefiPayloadEntry creates the
+gUniversalPayloadSmbiosTableGuid HOB, but never initializeses
+the contents, resulting in uninitialized memory, causing SmbiosDxe
+to crash when it doesn't point to mapped DRAM.
+
+Fix that by only creating gUniversalPayloadSmbiosTableGuid HOB
+when SMBIOS tables where found.
+
+TEST=Can boot using UEFIPayload when coreboot doesn't provide
+     SMBIOS tables.
+
+Signed-off-by: Patrick Rudolph <patrick.rudolph@9elements.com>
+(cherry picked from commit 05dd01ea558f15e58a3924955ab42243ff1e98e5)
+---
+ UefiPayloadPkg/Include/Library/BlParseLib.h      |  4 ++--
+ UefiPayloadPkg/Library/CbParseLib/CbParseLib.c   | 10 +++++++---
+ UefiPayloadPkg/Library/SblParseLib/SblParseLib.c |  9 ++++++---
+ .../UefiPayloadEntry/UefiPayloadEntry.c          | 16 +++++++++-------
+ 4 files changed, 24 insertions(+), 15 deletions(-)
+
+diff --git a/UefiPayloadPkg/Include/Library/BlParseLib.h b/UefiPayloadPkg/Include/Library/BlParseLib.h
+index 365a0f34d8..b946ada855 100644
+--- a/UefiPayloadPkg/Include/Library/BlParseLib.h
++++ b/UefiPayloadPkg/Include/Library/BlParseLib.h
+@@ -68,7 +68,7 @@ ParseMemoryInfo (
+ /**
+   Acquire SMBIOS table from bootloader.
+ 
+-  @param  SmbiosTable           Pointer to the system table info
++  @param  SmBiosEntryPoint          Pointer to the SMBIOS structure.
+ 
+   @retval RETURN_SUCCESS            Successfully find out the tables.
+   @retval RETURN_NOT_FOUND          Failed to find the tables.
+@@ -77,7 +77,7 @@ ParseMemoryInfo (
+ RETURN_STATUS
+ EFIAPI
+ ParseSmbiosTable (
+-  OUT UNIVERSAL_PAYLOAD_SMBIOS_TABLE  *SmbiosTable
++  OUT UINT64 *SmBiosEntryPoint
+   );
+ 
+ /**
+diff --git a/UefiPayloadPkg/Library/CbParseLib/CbParseLib.c b/UefiPayloadPkg/Library/CbParseLib/CbParseLib.c
+index 143e318e96..6318c87ac9 100644
+--- a/UefiPayloadPkg/Library/CbParseLib/CbParseLib.c
++++ b/UefiPayloadPkg/Library/CbParseLib/CbParseLib.c
+@@ -452,7 +452,7 @@ ParseMemoryInfo (
+ /**
+   Acquire SMBIOS table from coreboot.
+ 
+-  @param  SmbiosTable               Pointer to the SMBIOS table info.
++  @param  SmBiosEntryPoint          Pointer to the SMBIOS structure.
+ 
+   @retval RETURN_SUCCESS            Successfully find out the tables.
+   @retval RETURN_NOT_FOUND          Failed to find the tables.
+@@ -461,19 +461,23 @@ ParseMemoryInfo (
+ RETURN_STATUS
+ EFIAPI
+ ParseSmbiosTable (
+-  OUT UNIVERSAL_PAYLOAD_SMBIOS_TABLE  *SmbiosTable
++  OUT UINT64 *SmBiosEntryPoint
+   )
+ {
+   EFI_STATUS  Status;
+   VOID        *MemTable;
+   UINT32      MemTableSize;
+ 
++  if (SmBiosEntryPoint == NULL) {
++    return RETURN_INVALID_PARAMETER;
++  }
++
+   Status = ParseCbMemTable (SIGNATURE_32 ('T', 'B', 'M', 'S'), &MemTable, &MemTableSize);
+   if (EFI_ERROR (Status)) {
+     return EFI_NOT_FOUND;
+   }
+ 
+-  SmbiosTable->SmBiosEntryPoint = (UINT64)(UINTN)MemTable;
++  *SmBiosEntryPoint = (UINT64)(UINTN)MemTable;
+ 
+   return RETURN_SUCCESS;
+ }
+diff --git a/UefiPayloadPkg/Library/SblParseLib/SblParseLib.c b/UefiPayloadPkg/Library/SblParseLib/SblParseLib.c
+index 7cc615a35e..669713f08f 100644
+--- a/UefiPayloadPkg/Library/SblParseLib/SblParseLib.c
++++ b/UefiPayloadPkg/Library/SblParseLib/SblParseLib.c
+@@ -113,7 +113,7 @@ ParseMemoryInfo (
+ /**
+   Acquire SMBIOS table from slim bootloader.
+ 
+-  @param  SmbiosTable           Pointer to the SMBIOS table info.
++  @param  SmBiosEntryPoint          Pointer to the SMBIOS structure.
+ 
+   @retval RETURN_SUCCESS            Successfully find out the tables.
+   @retval RETURN_NOT_FOUND          Failed to find the tables.
+@@ -122,18 +122,21 @@ ParseMemoryInfo (
+ RETURN_STATUS
+ EFIAPI
+ ParseSmbiosTable (
+-  OUT UNIVERSAL_PAYLOAD_SMBIOS_TABLE  *SmbiosTable
++  OUT UINT64 *SmBiosEntryPoint
+   )
+ {
+   UNIVERSAL_PAYLOAD_SMBIOS_TABLE  *TableInfo;
+ 
++  if (SmBiosEntryPoint == NULL) {
++    return RETURN_INVALID_PARAMETER;
++  }
+   TableInfo = (UNIVERSAL_PAYLOAD_SMBIOS_TABLE *)GetGuidHobDataFromSbl (&gUniversalPayloadSmbiosTableGuid);
+   if (TableInfo == NULL) {
+     ASSERT (FALSE);
+     return RETURN_NOT_FOUND;
+   }
+ 
+-  SmbiosTable->SmBiosEntryPoint = TableInfo->SmBiosEntryPoint;
++  *SmBiosEntryPoint = TableInfo->SmBiosEntryPoint;
+ 
+   return RETURN_SUCCESS;
+ }
+diff --git a/UefiPayloadPkg/UefiPayloadEntry/UefiPayloadEntry.c b/UefiPayloadPkg/UefiPayloadEntry/UefiPayloadEntry.c
+index 921ce7d716..bd9f4bfb0b 100644
+--- a/UefiPayloadPkg/UefiPayloadEntry/UefiPayloadEntry.c
++++ b/UefiPayloadPkg/UefiPayloadEntry/UefiPayloadEntry.c
+@@ -350,6 +350,7 @@ BuildHobFromBl (
+   EFI_PEI_GRAPHICS_DEVICE_INFO_HOB  *NewGfxDeviceInfo;
+   UNIVERSAL_PAYLOAD_SMBIOS_TABLE    *SmBiosTableHob;
+   UNIVERSAL_PAYLOAD_ACPI_TABLE      *AcpiTableHob;
++  UINT64                            SmBiosEntryPoint;
+ 
+   //
+   // First find TOLUD
+@@ -415,14 +416,15 @@ BuildHobFromBl (
+   //
+   // Create SmBios table Hob
+   //
+-  SmBiosTableHob = BuildGuidHob (&gUniversalPayloadSmbiosTableGuid, sizeof (UNIVERSAL_PAYLOAD_SMBIOS_TABLE));
+-  ASSERT (SmBiosTableHob != NULL);
+-  SmBiosTableHob->Header.Revision = UNIVERSAL_PAYLOAD_SMBIOS_TABLE_REVISION;
+-  SmBiosTableHob->Header.Length   = sizeof (UNIVERSAL_PAYLOAD_SMBIOS_TABLE);
+-  DEBUG ((DEBUG_INFO, "Create smbios table gUniversalPayloadSmbiosTableGuid guid hob\n"));
+-  Status = ParseSmbiosTable (SmBiosTableHob);
++  Status = ParseSmbiosTable (&SmBiosEntryPoint);
+   if (!EFI_ERROR (Status)) {
+-    DEBUG ((DEBUG_INFO, "Detected Smbios Table at 0x%lx\n", SmBiosTableHob->SmBiosEntryPoint));
++    DEBUG ((DEBUG_INFO, "Detected Smbios Table at 0x%lx\n", SmBiosEntryPoint));
++    SmBiosTableHob = BuildGuidHob (&gUniversalPayloadSmbiosTableGuid, sizeof (UNIVERSAL_PAYLOAD_SMBIOS_TABLE));
++    ASSERT (SmBiosTableHob != NULL);
++    SmBiosTableHob->Header.Revision = UNIVERSAL_PAYLOAD_SMBIOS_TABLE_REVISION;
++    SmBiosTableHob->Header.Length   = sizeof (UNIVERSAL_PAYLOAD_SMBIOS_TABLE);
++    SmBiosTableHob->SmBiosEntryPoint = SmBiosEntryPoint;
++    DEBUG ((DEBUG_INFO, "Create smbios table gUniversalPayloadSmbiosTableGuid guid hob\n"));
+   }
+ 
+   //
+-- 
+2.55.0
+

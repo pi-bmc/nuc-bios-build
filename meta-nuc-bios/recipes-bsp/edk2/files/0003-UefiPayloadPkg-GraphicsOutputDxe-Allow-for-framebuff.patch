@@ -1,0 +1,39 @@
+From 72f3343780313d5d92937888eda6666a78a1f4ff Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20Kope=C4=87?= <michal.kopec@3mdeb.com>
+Date: Thu, 2 May 2024 13:21:01 +0200
+Subject: [PATCH 03/23] UefiPayloadPkg/GraphicsOutputDxe: Allow for framebuffer
+ at an offset from BAR
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On Meteor Lake the framebuffer is at BAR2 + 0x800000. Allow for this
+case when validating the framebuffer info received from coreboot.
+
+Fixes graphics output on Meteor Lake platforms.
+
+Signed-off-by: Michał Kopeć <michal.kopec@3mdeb.com>
+(cherry picked from commit 4e40ebf2da633590dc5b5b75502a1f1aa60a5795)
+---
+ UefiPayloadPkg/GraphicsOutputDxe/GraphicsOutput.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/UefiPayloadPkg/GraphicsOutputDxe/GraphicsOutput.c b/UefiPayloadPkg/GraphicsOutputDxe/GraphicsOutput.c
+index 39ad03fe32..74c1ce12cf 100644
+--- a/UefiPayloadPkg/GraphicsOutputDxe/GraphicsOutput.c
++++ b/UefiPayloadPkg/GraphicsOutputDxe/GraphicsOutput.c
+@@ -435,8 +435,9 @@ GraphicsOutputDriverBindingStart (
+             }
+ 
+             if (DeviceInfo->BarIndex == MAX_UINT8) {
+-              if (Resources->AddrRangeMin == GraphicsInfo->FrameBufferBase) {
+-                FrameBufferBase = Resources->AddrRangeMin;
++              if (Resources->AddrRangeMin <= GraphicsInfo->FrameBufferBase
++                  && Resources->AddrRangeMin + Resources->AddrLen >= GraphicsInfo->FrameBufferBase + GraphicsInfo->FrameBufferSize ) {
++                FrameBufferBase = GraphicsInfo->FrameBufferBase;
+                 break;
+               }
+             } else {
+-- 
+2.55.0
+

@@ -1,0 +1,43 @@
+From 7527f35cb3ecdb1820bb99392f108fc47824f225 Mon Sep 17 00:00:00 2001
+From: Sean Rhodes <sean@starlabs.systems>
+Date: Thu, 3 Feb 2022 21:36:56 +0000
+Subject: [PATCH 05/23] UefiPayloadPkg: Hookup Prioritize Internal build option
+
+Hook PRIORITIZE_INTERNAL build option to PrioritizeInternal PCD.
+
+Cc: Guo Dong <guo.dong@intel.com>
+Cc: Ray Ni <ray.ni@intel.com>
+Cc: Maurice Ma <maurice.ma@intel.com>
+Cc: Benjamin You <benjamin.you@intel.com>
+Signed-off-by: Sean Rhodes <sean@starlabs.systems>
+Signed-off-by: Matt DeVillier <matt.devillier@gmail.com>
+Change-Id: I5c6ef766a219d22f4f5ae79c18e30941646cbd62
+(cherry picked from commit 286c4e0acc0779c9aac9e09a0ec9bb19d5bb6bdb)
+---
+ UefiPayloadPkg/UefiPayloadPkg.dsc | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/UefiPayloadPkg/UefiPayloadPkg.dsc b/UefiPayloadPkg/UefiPayloadPkg.dsc
+index 1b9702f665..0231114d7d 100644
+--- a/UefiPayloadPkg/UefiPayloadPkg.dsc
++++ b/UefiPayloadPkg/UefiPayloadPkg.dsc
+@@ -41,6 +41,7 @@
+   DEFINE ATA_ENABLE                   = TRUE
+   DEFINE SD_ENABLE                    = TRUE
+   DEFINE PS2_MOUSE_ENABLE             = TRUE
++  DEFINE PRIORITIZE_INTERNAL          = FALSE
+   DEFINE SD_MMC_TIMEOUT               = 1000000
+   DEFINE USE_CBMEM_FOR_CONSOLE        = FALSE
+   DEFINE BOOTSPLASH_IMAGE             = FALSE
+@@ -626,6 +627,8 @@
+ !endif
+   gEfiMdeModulePkgTokenSpaceGuid.PcdSdMmcGenericTimeoutValue|$(SD_MMC_TIMEOUT)
+ 
++  gEfiMdeModulePkgTokenSpaceGuid.PcdPrioritizeInternal|$(PRIORITIZE_INTERNAL)
++
+   gUefiPayloadPkgTokenSpaceGuid.PcdBootManagerEscape|$(BOOT_MANAGER_ESCAPE)
+ 
+   gEfiMdePkgTokenSpaceGuid.PcdMaximumUnicodeStringLength|1800000
+-- 
+2.55.0
+

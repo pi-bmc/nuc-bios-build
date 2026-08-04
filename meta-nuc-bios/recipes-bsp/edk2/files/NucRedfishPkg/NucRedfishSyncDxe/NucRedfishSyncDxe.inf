@@ -29,7 +29,6 @@
   MdePkg/MdePkg.dec
   MdeModulePkg/MdeModulePkg.dec
   RedfishPkg/RedfishPkg.dec
-  UefiPayloadPkg/UefiPayloadPkg.dec
   NucRedfishPkg/NucRedfishPkg.dec
 
 [LibraryClasses]
@@ -39,7 +38,6 @@
   DevicePathLib
   JsonLib
   MemoryAllocationLib
-  PcdLib
   PrintLib
   RedfishHttpLib
   UefiBootManagerLib
@@ -54,11 +52,6 @@
 
 [Guids]
   gEfiGlobalVariableGuid                    ## CONSUMES
-
-[Pcd]
-  # Identifies the iPXE FFS in the payload FV, so a Redfish "Pxe" boot override
-  # can be matched to the boot option PlatformBootManagerLib registers for it.
-  gUefiPayloadPkgTokenSpaceGuid.PcdiPXEFile ## CONSUMES
 
 [Depex]
   gEfiSmbiosProtocolGuid

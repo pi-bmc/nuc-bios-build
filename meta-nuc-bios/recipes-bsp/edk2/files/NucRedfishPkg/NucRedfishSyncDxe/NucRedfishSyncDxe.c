@@ -34,7 +34,6 @@
 
 #include <Library/DevicePathLib.h>
 #include <Library/JsonLib.h>
-#include <Library/PcdLib.h>
 #include <Library/UefiBootManagerLib.h>
 
 STATIC EFI_HANDLE  mImageHandle = NULL;
@@ -114,40 +113,50 @@ OptionHasNode (
 }
 
 /**
-  Report whether a boot option loads a particular file out of a firmware volume.
+  Report whether a boot option boots from a real network interface.
 
-  @param[in] Option    Boot option to inspect.
-  @param[in] FileGuid  FFS file GUID to match, may be NULL.
+  Requires a MAC node, which is what makes it a network option, and rejects
+  anything reached through USB. On this board the only USB NIC is the BMC's
+  CDC-ECM host interface -- a DSP0270 management link with no DHCP server on it,
+  which must never be selected as a boot target. PlatformBootManagerLib prunes
+  its auto-created option for the same reason, so this is belt and braces
+  against an option that arrived some other way.
 
-  @retval TRUE   The option's device path names this FV file.
-  @retval FALSE  It does not, or FileGuid is NULL.
+  @param[in] Option  Boot option to inspect.
+
+  @retval TRUE   The option boots from a non-USB network interface.
+  @retval FALSE  It does not.
 **/
 STATIC
 BOOLEAN
-OptionIsFvFile (
-  IN EFI_BOOT_MANAGER_LOAD_OPTION  *Option,
-  IN EFI_GUID                      *FileGuid
+OptionIsNetworkBoot (
+  IN EFI_BOOT_MANAGER_LOAD_OPTION  *Option
   )
 {
-  EFI_DEVICE_PATH_PROTOCOL           *Node;
-  MEDIA_FW_VOL_FILEPATH_DEVICE_PATH  *FvFile;
+  EFI_DEVICE_PATH_PROTOCOL  *Node;
+  BOOLEAN                   HasMac;
 
-  if ((Option == NULL) || (Option->FilePath == NULL) || (FileGuid == NULL)) {
+  if ((Option == NULL) || (Option->FilePath == NULL)) {
     return FALSE;
   }
 
+  HasMac = FALSE;
+
   for (Node = Option->FilePath; !IsDevicePathEnd (Node); Node = NextDevicePathNode (Node)) {
-    if ((DevicePathType (Node) == MEDIA_DEVICE_PATH) &&
-        (DevicePathSubType (Node) == MEDIA_PIWG_FW_FILE_DP))
-    {
-      FvFile = (MEDIA_FW_VOL_FILEPATH_DEVICE_PATH *)Node;
-      if (CompareGuid (&FvFile->FvFileName, FileGuid)) {
-        return TRUE;
-      }
+    if (DevicePathType (Node) != MESSAGING_DEVICE_PATH) {
+      continue;
+    }
+
+    if (DevicePathSubType (Node) == MSG_USB_DP) {
+      return FALSE;
+    }
+
+    if (DevicePathSubType (Node) == MSG_MAC_ADDR_DP) {
+      HasMac = TRUE;
     }
   }
 
-  return FALSE;
+  return HasMac;
 }
 
 /**
@@ -297,14 +306,16 @@ FindBootOverrideOption (
       Found = (((*Options)[Index].Attributes & LOAD_OPTION_CATEGORY) == LOAD_OPTION_CATEGORY_APP);
     } else if (AsciiStrCmp (Target, "Pxe") == 0) {
       //
-      // Network boot on this platform *is* iPXE: it is built into the payload
-      // FV (EDK2_ENABLE_IPXE) and registered by PlatformBootManagerLib as an FV
-      // file boot option, so its device path ends in a firmware-volume file
-      // node carrying PcdiPXEFile -- not in a MAC/IPv4 node the way a NIC's own
-      // UEFI PXE option would. Matching the GUID identifies it exactly, without
-      // depending on PcdiPXEOptionName, which is a display string.
+      // Network boot is BDS's own "PXEv4 (MAC:...)" option for the onboard NIC,
+      // auto-created once ipxe-intel.efidrv publishes SNP for it. Match the
+      // device path rather than the description, which is localised.
       //
-      Found = OptionIsFvFile (&(*Options)[Index], (EFI_GUID *)PcdGetPtr (PcdiPXEFile));
+      // This used to match the iPXE boot application by its FFS GUID. That
+      // application is no longer embedded (EDK2_IPXE_APP defaults off): it did
+      // not work on this board, and the PXEv4 option is what actually
+      // chainloads. See OptionIsNetworkBoot().
+      //
+      Found = OptionIsNetworkBoot (&(*Options)[Index]);
     } else if (AsciiStrCmp (Target, "Hdd") == 0) {
       //
       // Local block storage, in whichever shape BDS has it at this point.

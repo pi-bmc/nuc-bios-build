@@ -128,7 +128,17 @@ INHIBIT_DEFAULT_DEPS = "1"
 # BMP LZMA-compresses to ~7 KiB when coreboot packs the payload into CBFS.
 EDK2_BOOTSPLASH_FILE ??= "${WORKDIR}/bootsplash.bmp"
 EDK2_GOP_FILE ??= ""
+# EDK2_IPXE builds the iPXE tree and embeds ipxe-intel.efidrv, the UNDI/SNP
+# driver for the onboard NIC. That driver is the reason netboot works at all:
+# nothing else in this payload publishes EFI_SIMPLE_NETWORK_PROTOCOL for the
+# LOM, so without it a chainloaded iPXE snp.efi has no interface to boot from.
+#
+# EDK2_IPXE_APP additionally embeds the iPXE boot *application* and registers it
+# as a boot option. Off by default: it does not work on this board, and BDS
+# already offers the LOM as "PXEv4 (MAC:...)" via the driver above, which is
+# what actually chainloads.
 EDK2_IPXE ??= "1"
+EDK2_IPXE_APP ??= "0"
 EDK2_IPXE_OPTION_NAME ??= "iPXE"
 EDK2_REDFISH ??= "1"
 EDK2_CUSTOM_BUILD_PARAMS ??= ""
@@ -154,6 +164,19 @@ EDK2_PACKAGES_PATH = "${S}:${EDK2_PLATFORMS_PATH}/Platform/Intel:${EDK2_PLATFORM
 #                               the TPM via the board port's ACPI TPM2 table.
 #   SERIAL off / CBMEM on       no UART is routed (NO_UART_ON_SUPERIO); read
 #                               the firmware console with `cbmem -c`.
+#   NETWORK_PXE_BOOT=TRUE       builds edk2's own PXE stack (UefiPxeBcDxe plus
+#                               Mnp/Arp/Dhcp4/Mtftp4). Without it nothing in the
+#                               payload creates a PXE boot option at all -- the
+#                               "PXEv4 (MAC:...)" entries that used to appear
+#                               were iPXE's own EFI_LOAD_FILE_PROTOCOL, not this
+#                               stack, and the one BDS picked failed with "Not
+#                               Found". iPXE is now only the UNDI/SNP provider
+#                               for the LOM (ipxe-intel.efidrv, built with
+#                               EFI_DOWNGRADE_UX so it offers no boot method of
+#                               its own), and edk2 owns the whole boot path.
+#                               Note the DSC also forces the Realtek and ASIX
+#                               UNDI blobs on with this define; they are inert
+#                               here but do occupy FV space.
 #   NETWORK_HTTP_ENABLE=TRUE    RedfishRestExDxe rides HttpDxe. TLS stays off:
 #                               the host interface is a point-to-point USB
 #                               link, and OpenSSL would cost ~1 MB of FV.
@@ -182,6 +205,7 @@ EDK2_BUILD_FLAGS = " \
     -D LOAD_OPTION_ROMS=TRUE \
     -D NETWORK_ENABLE=TRUE \
     -D NETWORK_SNP_ENABLE=TRUE \
+    -D NETWORK_PXE_BOOT=TRUE \
     -D NETWORK_IP4_ENABLE=TRUE \
     -D NETWORK_IP6_ENABLE=FALSE \
     -D NETWORK_HTTP_ENABLE=TRUE \
@@ -203,12 +227,23 @@ EDK2_BUILD_FLAGS = " \
     "
 
 python () {
+    # NETWORK_IPXE_UNDI embeds ipxe-intel.efidrv, the UNDI/SNP driver for the
+    # onboard NIC. NETWORK_IPXE -- the iPXE boot *application* -- is deliberately
+    # not set with it: the two are independent, and the application is not
+    # wanted. See EDK2_IPXE_APP below.
     if d.getVar('EDK2_IPXE') == '1':
+        d.appendVar('EDK2_BUILD_FLAGS', ' -D NETWORK_IPXE_UNDI=TRUE')
+    if d.getVar('EDK2_IPXE_APP') == '1':
         d.appendVar('EDK2_BUILD_FLAGS', ' -D NETWORK_IPXE=TRUE')
         # Deliberately a single word: coreboot emits the same PCD and Kconfig
         # keeps the quotes on string values, so a value containing spaces
         # reaches edk2's build.py mangled -- the DSC parser rejects it with
         # "error 3000: Syntax error".
+        #
+        # It is also what gates the boot option: PlatformBootManagerLib only
+        # calls PlatformRegisterFvBootOption() when both PcdiPXEFile and
+        # PcdiPXEOptionName are set, so leaving this unset is what keeps the
+        # application out of the boot menu.
         d.appendVar('EDK2_BUILD_FLAGS',
                     ' --pcd gUefiPayloadPkgTokenSpaceGuid.PcdiPXEOptionName=L"%s"'
                     % d.getVar('EDK2_IPXE_OPTION_NAME'))
@@ -266,8 +301,13 @@ do_configure() {
     # UefiPayloadPkg.fdf expects at NetworkDrivers/ipxe.efi.
     if [ "${EDK2_IPXE}" = "1" ]; then
         install -d ${S}/UefiPayloadPkg/NetworkDrivers
-        install -m 0644 ${DEPLOY_DIR_IMAGE}/ipxe.rom \
-            ${S}/UefiPayloadPkg/NetworkDrivers/ipxe.efi
+
+        # Only staged when the application is actually wanted -- the FDF entry
+        # that consumes it is gated on NETWORK_IPXE, which EDK2_IPXE_APP sets.
+        if [ "${EDK2_IPXE_APP}" = "1" ]; then
+            install -m 0644 ${DEPLOY_DIR_IMAGE}/ipxe.rom \
+                ${S}/UefiPayloadPkg/NetworkDrivers/ipxe.efi
+        fi
 
         # The UNDI/SNP driver for the onboard NIC, dispatched from the DXE FV
         # (see the FDF patch). Without it nothing in this payload publishes

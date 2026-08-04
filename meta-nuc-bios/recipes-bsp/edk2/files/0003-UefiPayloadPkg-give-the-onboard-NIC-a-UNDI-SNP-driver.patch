@@ -1,40 +1,260 @@
 From: nuc-bios-build <nbatkins@gmail.com>
-Subject: [PATCH] UefiPayloadPkg: give the onboard NIC a UNDI/SNP driver
+Subject: [PATCH] UefiPayloadPkg: UNDI/SNP for the onboard NIC, and prune the rest
 
-Nothing in this payload publishes EFI_SIMPLE_NETWORK_PROTOCOL for the onboard
-I218-V. UefiPayloadPkg carries prebuilt Realtek and ASIX UNDI blobs and no Intel
-one, and SnpDxe only layers SNP over an existing UNDI/NII instance -- so the
-BMC's CDC-ECM gadget ends up being the only network interface the firmware
-exposes. Measured on hardware 2026-08-04:
+Two related changes to what BDS offers as a network boot device.
+
+1. Publish SNP for the onboard I218-V.
+
+Nothing in this payload did. UefiPayloadPkg carries prebuilt Realtek and ASIX
+UNDI blobs and no Intel one, and SnpDxe only layers SNP over an existing
+UNDI/NII instance, so the BMC's CDC-ECM gadget was the only network interface
+the firmware exposed. Measured on hardware 2026-08-04:
 
     NucRedfishSync: 2 SNP handle(s) in the system
     NucRedfishSync:   SNP[0] DA:A7:62:23:3E:F5
     NucRedfishSync:   SNP[1] DA:A7:62:23:3E:F5
 
-Both are the gadget; the LOM (B8:AE:ED:7E:3F:6E) is absent.
+Both the gadget; the LOM (B8:AE:ED:7E:3F:6E) absent. A chainloaded iPXE snp.efi
+-- what Tinkerbell boots -- has no native drivers and binds SNP handles only, so
+it had nothing to netboot from and retried DHCP over the management link until
+it hit its retry limit.
 
-That is what breaks a chainloaded iPXE snp.efi, which is what Tinkerbell boots.
-snp.efi contains no native drivers -- it binds SNP handles and nothing else --
-so it saw the management link as its only interface, retried DHCP on it, and
-gave up at the retry limit. No amount of interface ordering helps when there is
-only one interface, and the ordering itself is not adjustable anyway: the ECM
-hangs off the xHCI controller at 00:14.0, which precedes the LOM at 00:19.0 in
-PCI order, and both are fixed Wildcat Point-LP function numbers that
-devicetree.cb describes rather than assigns.
+The driver is iPXE built as a UEFI driver (bin-x86_64-efi/intel.efidrv, via
+interface/efi/efi_snp.c), embedded next to the Realtek and ASIX blobs. It is
+gated on its own NETWORK_IPXE_UNDI define rather than NETWORK_IPXE, because the
+iPXE boot *application* is a separate thing and is not wanted here.
 
-So publish an SNP for the LOM. The driver is iPXE built as a UEFI driver
-(bin-x86_64-efi-sb/intel.efidrv, via interface/efi/efi_snp.c) rather than an
-application, dispatched from the DXE FV alongside the Realtek and ASIX blobs it
-sits next to. Its driver set is the intel driver alone, so it carries no USB or
-SNP shims and cannot bind the gadget itself.
+2. Prune the boot options nobody should see.
 
-Gated on NETWORK_IPXE because that is what stages the binary.
+EfiBootManagerRefreshAllBootOption() creates a PXEv4 option for every network
+interface it can boot from, which on this board yields:
+
+    PXEv4 (MAC:B8AEED7E3F6E)        PciRoot()/Pci(0x19,0)/MAC()
+    PXEv4 (MAC:B8AEED7E3F6E) 2      PciRoot()/Pci(0x19,0)/MAC()/IPv4()
+    PXEv4 (MAC:DAA762233EF5)        the BMC host interface, over USB
+
+The onboard NIC appears twice because iPXE's UNDI driver installs SNP *and*
+NII31 on one handle. The two are not interchangeable: only the NII31 entry --
+the one carrying an IPv4 node, because the UEFI PXE stack layered Ip4 on it --
+actually boots. Selecting the bare SNP one fails at BDS with
+
+    Booting from 'PXEv4 (MAC:B8AEED7E3F6E)' failed: Not Found
+
+and, with nothing to fall back to, leaves the machine at a "Press any key to
+continue" prompt. So for each MAC keep the option carrying an IPv4 node and drop
+the rest, rather than keeping whichever came first.
+
+The third entry is the management link, which has no DHCP server and is not a
+boot path. It is recognised by a USB node in its device path -- no USB-attached
+NIC on this board is a boot device -- which keeps the check free of any
+dependency on the Redfish package.
+
+Finally the " 2" BDS appended to disambiguate the duplicate is stripped, since
+after pruning there is nothing left to disambiguate against.
 
 Upstream-Status: Inappropriate [platform specific]
 Signed-off-by: nuc-bios-build <nbatkins@gmail.com>
 ---
---- a/UefiPayloadPkg/UefiPayloadPkg.fdf
-+++ b/UefiPayloadPkg/UefiPayloadPkg.fdf
+--- a/UefiPayloadPkg/Library/PlatformBootManagerLib/PlatformBootManager.c	2026-08-04 10:12:32.423293206 -0500
++++ b/UefiPayloadPkg/Library/PlatformBootManagerLib/PlatformBootManager.c	2026-08-04 10:46:05.166878339 -0500
+@@ -441,6 +441,176 @@
+   PlatformConsoleInit ();
+ }
+ 
++
++/**
++  Tidy the auto-created network boot options.
++
++  EfiBootManagerRefreshAllBootOption() creates a PXEv4 option for every network
++  interface it can boot from, which on this board yields three entries where
++  only one is wanted:
++
++    PXEv4 (MAC:B8AEED7E3F6E)        PciRoot()/Pci(0x19,0)/MAC()
++    PXEv4 (MAC:B8AEED7E3F6E) 2      PciRoot()/Pci(0x19,0)/MAC()/IPv4()
++    PXEv4 (MAC:DAA762233EF5)        the BMC host interface, over USB
++
++  The onboard NIC appears twice because iPXE's UNDI driver installs SNP *and*
++  NII31 on one handle. The two are not interchangeable: only the NII31 one --
++  the one carrying an IPv4 node, because the UEFI PXE stack layered Ip4 on it --
++  actually boots. Selecting the other fails at BDS with
++
++      Booting from 'PXEv4 (MAC:B8AEED7E3F6E)' failed: Not Found
++
++  and, having no fallback, leaves the machine sitting at a "Press any key to
++  continue" prompt. So for each MAC keep the option with an IPv4 node and drop
++  the rest, rather than keeping whichever came first.
++
++  The host interface goes entirely. It exists for Redfish (DSP0270), has no DHCP
++  server on it, and is not a boot path. Recognised by a USB node in its device
++  path -- no USB-attached NIC on this board is a boot device -- which keeps this
++  free of any dependency on the Redfish package.
++
++  Finally, drop the " 2" that BDS appended to disambiguate the duplicate, since
++  after pruning there is nothing left to disambiguate against.
++
++  Only auto-created options are considered; anything an OS installer or an
++  operator wrote is left alone.
++**/
++STATIC
++VOID
++PruneAutoCreatedNetworkBootOptions (
++  VOID
++  )
++{
++  EFI_BOOT_MANAGER_LOAD_OPTION  *Options;
++  EFI_DEVICE_PATH_PROTOCOL      *Node;
++  MAC_ADDR_DEVICE_PATH          *Mac;
++  UINTN                         OptionCount;
++  UINTN                         Index;
++  UINTN                         Other;
++  UINTN                         Length;
++  BOOLEAN                       Drop;
++  EFI_MAC_ADDRESS               *MacOf[16];
++  BOOLEAN                       HasIp4[16];
++  BOOLEAN                       OverUsb[16];
++  CHAR16                        *Desc;
++
++  Options = EfiBootManagerGetLoadOptions (&OptionCount, LoadOptionTypeBoot);
++  if ((Options == NULL) || (OptionCount == 0)) {
++    return;
++  }
++
++  if (OptionCount > ARRAY_SIZE (MacOf)) {
++    OptionCount = ARRAY_SIZE (MacOf);
++  }
++
++  //
++  // Classify every option first: deleting as we go would mean deciding about
++  // one entry before having seen the one that should outrank it.
++  //
++  for (Index = 0; Index < OptionCount; Index++) {
++    MacOf[Index]   = NULL;
++    HasIp4[Index]  = FALSE;
++    OverUsb[Index] = FALSE;
++
++    if (Options[Index].FilePath == NULL) {
++      continue;
++    }
++
++    for (Node = Options[Index].FilePath; !IsDevicePathEnd (Node); Node = NextDevicePathNode (Node)) {
++      if (DevicePathType (Node) != MESSAGING_DEVICE_PATH) {
++        continue;
++      }
++
++      switch (DevicePathSubType (Node)) {
++        case MSG_USB_DP:
++          OverUsb[Index] = TRUE;
++          break;
++        case MSG_IPv4_DP:
++          HasIp4[Index] = TRUE;
++          break;
++        case MSG_MAC_ADDR_DP:
++          Mac          = (MAC_ADDR_DEVICE_PATH *)Node;
++          MacOf[Index] = &Mac->MacAddress;
++          break;
++        default:
++          break;
++      }
++    }
++  }
++
++  for (Index = 0; Index < OptionCount; Index++) {
++    //
++    // Not a network option at all.
++    //
++    if (MacOf[Index] == NULL) {
++      continue;
++    }
++
++    Drop = OverUsb[Index];
++
++    //
++    // Outranked by another option for the same NIC?
++    //
++    for (Other = 0; (Other < OptionCount) && !Drop; Other++) {
++      if ((Other == Index) || (MacOf[Other] == NULL) || OverUsb[Other]) {
++        continue;
++      }
++
++      if (CompareMem (MacOf[Other], MacOf[Index], sizeof (EFI_MAC_ADDRESS)) != 0) {
++        continue;
++      }
++
++      if (HasIp4[Other] && !HasIp4[Index]) {
++        //
++        // The NII31 entry boots; the bare SNP one does not.
++        //
++        Drop = TRUE;
++      } else if ((HasIp4[Other] == HasIp4[Index]) && (Other < Index)) {
++        Drop = TRUE;
++      }
++    }
++
++    if (Drop) {
++      DEBUG ((
++        DEBUG_INFO,
++        "%a: dropping Boot%04x (%a)\n",
++        __func__,
++        Options[Index].OptionNumber,
++        OverUsb[Index] ? "USB host interface" : "outranked duplicate"
++        ));
++      EfiBootManagerDeleteLoadOptionVariable (Options[Index].OptionNumber, LoadOptionTypeBoot);
++      continue;
++    }
++
++    //
++    // Survivor: strip a trailing " <n>" disambiguator, if BDS added one.
++    //
++    Desc = Options[Index].Description;
++    if (Desc == NULL) {
++      continue;
++    }
++
++    Length = StrLen (Desc);
++    while ((Length > 0) && (Desc[Length - 1] >= L'0') && (Desc[Length - 1] <= L'9')) {
++      Length--;
++    }
++
++    if ((Length > 1) && (Length < StrLen (Desc)) && (Desc[Length - 1] == L' ')) {
++      Desc[Length - 1] = L'\0';
++      EfiBootManagerLoadOptionToVariable (&Options[Index]);
++      DEBUG ((
++        DEBUG_INFO,
++        "%a: renamed Boot%04x to \"%s\"\n",
++        __func__,
++        Options[Index].OptionNumber,
++        Desc
++        ));
++    }
++  }
++
++  EfiBootManagerFreeLoadOptions (Options, OptionCount);
++}
++
+ /**
+   Do the platform specific action after the console is connected.
+ 
+@@ -475,6 +645,8 @@
+   EfiBootManagerConnectAll ();
+   EfiBootManagerRefreshAllBootOption ();
+ 
++  PruneAutoCreatedNetworkBootOptions ();
++
+   //
+   // Active BOOT_ON_FLASH_UPDATE mode means that at least one capsule has been
+   // discovered by a bootloader and passed for further processing into EDK which
+--- a/UefiPayloadPkg/UefiPayloadPkg.dsc	2026-08-04 10:10:31.774304187 -0500
++++ b/UefiPayloadPkg/UefiPayloadPkg.dsc	2026-08-04 10:10:31.774355242 -0500
+@@ -201,6 +201,7 @@
+   DEFINE NETWORK_ASIX_USB2              = FALSE
+   DEFINE NETWORK_SNP_ENABLE             = FALSE
+   DEFINE NETWORK_IPXE                   = FALSE
++  DEFINE NETWORK_IPXE_UNDI              = FALSE
+ 
+ !if $(NETWORK_PXE_BOOT) == TRUE
+   DEFINE NETWORK_ENABLE                 = TRUE
+--- a/UefiPayloadPkg/UefiPayloadPkg.fdf	2026-08-04 10:10:31.774451063 -0500
++++ b/UefiPayloadPkg/UefiPayloadPkg.fdf	2026-08-04 10:10:31.774484943 -0500
 @@ -504,6 +504,15 @@
  !if $(ARCH) == IA32
    # FIXME
@@ -43,7 +263,7 @@ Signed-off-by: nuc-bios-build <nbatkins@gmail.com>
 +# publishes EFI_SIMPLE_NETWORK_PROTOCOL for it, so a boot client that binds
 +# SNP handles only -- iPXE's snp.efi, which Tinkerbell chainloads -- saw just
 +# the BMC's host interface and had nothing to netboot from.
-+!if $(NETWORK_IPXE) == TRUE
++!if $(NETWORK_IPXE_UNDI) == TRUE
 +  FILE DRIVER = F773F4F9-5C3E-475F-AE02-151D514D7379 {
 +    SECTION PE32 = UefiPayloadPkg/NetworkDrivers/ipxe-intel.efidrv
 +  }

@@ -306,32 +306,62 @@ nothing else. With only the management link publishing one, it retried DHCP over
 the RHI until it hit its retry limit, with no second interface to fall through
 to.
 
-**The fix is `ipxe-intel.efidrv`**: iPXE built as a UEFI *driver* rather than an
-application (`bin-x86_64-efi/intel.efidrv`, via `interface/efi/efi_snp.c`),
-embedded in the DXE FV next to the Realtek and ASIX blobs. It binds the LOM and
-publishes SNP for it. After the fix:
+**The fix has two halves**, and both are needed:
+
+1. **`ipxe-intel.efidrv`** — iPXE built as a UEFI *driver* rather than an
+   application (`bin-x86_64-efi/intel.efidrv`, via `interface/efi/efi_snp.c`),
+   embedded in the DXE FV next to the Realtek and ASIX blobs. It is the only
+   thing that drives this NIC: edk2 has **no** driver for it. Nothing in the
+   tree matches `8086:15a3` or any PCI network class, and the one UNDI in
+   edk2-platforms (`OptionRomPkg/UndiRuntimeDxe`) targets `8086:1229`, a 1990s
+   EtherExpress PRO/100. `SnpDxe`, `UefiPxeBcDxe`, `Ip4Dxe` and friends are all
+   consumers — they need a UNDI/NII or SNP from somewhere.
+
+2. **`NETWORK_PXE_BOOT=TRUE`** — edk2's own PXE stack. It was never enabled, so
+   the payload had no PXE boot method at all. The `PXEv4 (MAC:...)` entries that
+   used to appear were iPXE's own `EFI_LOAD_FILE_PROTOCOL`, not this stack.
+
+iPXE is built with **`EFI_DOWNGRADE_UX`** so it does *not* install its own
+`EFI_LOAD_FILE_PROTOCOL`. BDS creates a boot option for every handle carrying
+LoadFile, so without this the NIC appeared twice and the entry BDS picked was
+iPXE's, which fails:
 
 ```text
-NucRedfishSync: 4 SNP handle(s) in the system
-NucRedfishSync:   SNP[0] B8:AE:ED:7E:3F:6E     <- LOM, first
-NucRedfishSync:   SNP[1] B8:AE:ED:7E:3F:6E
-NucRedfishSync:   SNP[2] DA:A7:62:23:3E:F5
-NucRedfishSync:   SNP[3] DA:A7:62:23:3E:F5
+Booting from 'PXEv4 (MAC:B8AEED7E3F6E)' failed: Not Found
+Verify it contains/points to a valid 64-bit UEFI OS.
+Press any key to continue
 ```
 
-The LOM enumerates *ahead* of the RHI, so `snp.efi` takes it as `net0`.
-Verified end to end 2026-08-04: CaptainOS netbooted via the iPXE chainload.
+With nothing to fall back to that parks the machine at that prompt — recoverable
+by sending a keypress over the JetKVM, no power cycle needed. iPXE anticipates
+this exactly: its comment in `efi_snp.c` notes the two cannot sensibly coexist
+because the boot menu labels both entries identically, and offers the switch to
+suppress its own.
 
-Two build details, both non-obvious:
+So the boot path is entirely edk2's, with iPXE only at the bottom:
 
-- The driver comes from the plain `bin-x86_64-efi` tree, not `-sb`. iPXE's
-  secboot assertion covers the application prefix but not the driver prefix, so
-  the `-sb` target refuses to link (`interface/efi/efidrvprefix.c` is missing a
-  `FILE_SECBOOT()` declaration). That is iPXE bookkeeping, not a signing
-  requirement, and FV contents are not subject to UEFI Secure Boot verification
-  anyway. The application still builds `-sb`, matching coreboot.
-- The target name *is* the driver set: `intel` resolves to the intel driver
-  alone, so the driver carries no USB or SNP shims and cannot bind the gadget.
+```text
+edk2 PXE BC -> Ip4 -> MNP -> SNP -> iPXE UNDI -> I218-V
+```
+
+The end state is one boot option per real device:
+
+```text
+Boot0001* NVMe: PM951 NVMe SAMSUNG 256GB
+Boot0002* PXEv4 (MAC:B8AEED7E3F6E)   PciRoot()/Pci(0x19,0)/MAC()/IPv4()
+Boot0003* UEFI Shell
+Boot0004* debian
+```
+
+Verified end to end 2026-08-04: CaptainOS (Tinkerbell) netboots from that entry.
+
+Note the DSC forces the Realtek and ASIX UNDI blobs on with `NETWORK_PXE_BOOT`;
+they are inert here but do occupy FV space.
+
+`PlatformBootManagerLib` additionally prunes auto-created network boot options
+that traverse a USB node — that is the BMC's host interface, a management link
+with no DHCP server on it — and any duplicate MAC, stripping the `" 2"` BDS
+appends. See patch 0003.
 
 ### Approaches that do not work — do not retry these
 

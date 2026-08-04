@@ -74,6 +74,27 @@ do_compile() {
     # ever building from a clean tree (see the ASFLAGS note below).
     rm -rf ${S}/src/bin-x86_64-efi-sb ${S}/src/bin-x86_64-efi
 
+    # EFI_DOWNGRADE_UX stops iPXE installing its own EFI_LOAD_FILE_PROTOCOL.
+    #
+    # BDS creates a boot option for every handle carrying LoadFile, so with it
+    # installed the onboard NIC appeared twice -- once for iPXE's LoadFile and
+    # once for the platform's own PXE stack layered on the same handle:
+    #
+    #   PXEv4 (MAC:B8AEED7E3F6E)        <- iPXE's LoadFile
+    #   PXEv4 (MAC:B8AEED7E3F6E) 2      <- edk2 PXE BC, via its Ip4 child
+    #
+    # Only the second boots. Selecting the first fails at BDS with "failed: Not
+    # Found" and, with nothing to fall back to, parks the machine at a "Press
+    # any key to continue" prompt.
+    #
+    # iPXE anticipates exactly this. Its own comment in interface/efi/efi_snp.c
+    # notes that the two cannot sensibly coexist because the boot menu labels
+    # both entries identically, and offers this switch to suppress its own. That
+    # is the right way round here: this build is a UNDI/SNP provider for the
+    # platform's PXE stack, not a boot method in its own right.
+    install -d ${S}/src/config/local
+    printf '#define EFI_DOWNGRADE_UX\n' > ${S}/src/config/local/general.h
+
     # The same target coreboot's payloads/external/iPXE builds when
     # CONFIG_IPXE_BUILD_EFI is set.
     #

@@ -122,7 +122,61 @@ static struct sm_obj_form storage = {
 	},
 };
 
+/* Shared by the three CPU feature toggles below. */
+static const struct sm_enum_value cpu_feature_values[] = {
+	{ "Disabled", 0 },
+	{ "Enabled",  1 },
+	SM_ENUM_VALUE_END,
+};
+
+/* Read by cpu/intel/haswell/bootblock.c ("hyper_threading", patch 0003):
+ * strapped through the PCH soft-reset data register, so a change costs one
+ * extra CPU-only warm reset at the next boot. */
+static const struct sm_object hyper_threading = SM_DECLARE_ENUM({
+	.opt_name	= "hyper_threading",
+	.ui_name	= "Intel Hyper-Threading Technology",
+	.ui_helptext	= "Run two logical processors per physical core (SMT). "
+			  "Changing this re-straps the CPU and adds one warm "
+			  "reset to the next boot.",
+	.default_value	= 1,	/* Enabled */
+	.values		= cpu_feature_values,
+});
+
+/* Read by cpu/intel/haswell/haswell_init.c ("vmx", patch 0001). */
+static const struct sm_object vmx = SM_DECLARE_ENUM({
+	.opt_name	= "vmx",
+	.ui_name	= "Intel Virtualization Technology (VT-x)",
+	.ui_helptext	= "Hardware CPU virtualization (VMX), required by KVM, "
+			  "Hyper-V and similar hypervisors. The setting is "
+			  "locked at boot, so the OS cannot override it.",
+	.default_value	= 1,	/* Enabled */
+	.values		= cpu_feature_values,
+});
+
+/* Read by northbridge/intel/{broadwell,haswell} ("vtd", patch 0002): gates
+ * the VT-d remapping units and the ACPI DMAR table together. */
+static const struct sm_object vtd = SM_DECLARE_ENUM({
+	.opt_name	= "vtd",
+	.ui_name	= "Intel VT for Directed I/O (VT-d)",
+	.ui_helptext	= "DMA and interrupt remapping (IOMMU), needed for PCI "
+			  "passthrough (VFIO). Disabling omits the ACPI DMAR "
+			  "table and leaves the remapping units unprogrammed.",
+	.default_value	= 1,	/* Enabled */
+	.values		= cpu_feature_values,
+});
+
+static struct sm_obj_form processor = {
+	.ui_name = "Processor",
+	.obj_list = (const struct sm_object *[]) {
+		&hyper_threading,
+		&vmx,
+		&vtd,
+		NULL
+	},
+};
+
 static struct sm_obj_form *sm_root[] = {
+	&processor,
 	&security,
 	&power,
 	&cooling,

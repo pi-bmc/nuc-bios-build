@@ -1,0 +1,113 @@
+From ab3885ba319791e0f27fbd35866ae8228bf3426e Mon Sep 17 00:00:00 2001
+From: appkins <nbatkins@gmail.com>
+Date: Tue, 4 Aug 2026 18:09:18 -0500
+Subject: [PATCH 3/3] cpu/intel/haswell: add a runtime "hyper_threading" option
+
+Port the SMT toggle cpu/intel/model_206ax has had since 2013: bit 0 of
+the PCH's SOFT_RESET_DATA register is fed to the CPU as the SMT-disable
+strap on a CPU-only warm reset, and the register value survives warm
+resets, so the reset only fires when the requested value changes. The
+flex-ratio path in bootblock_early_cpu_init() already uses the same
+register and the same CF9 flow on this platform, and Wildcat Point-LP
+carries the register at the same RCBA offsets.
+
+Two deliberate departures from the model_206ax code:
+
+- Gate on intel_ht_or_mc_supported() rather than intel_ht_supported().
+  Once SMT is strapped off, CPUID's SMT topology level reports one
+  thread and intel_ht_supported() returns false, which would leave the
+  strap stuck at "disabled" until a cold boot cleared it. The HTT
+  capability bit survives the strap, so re-enabling works from a warm
+  reboot too.
+- Run from bootblock_cpu_init() (the post-console hook) rather than
+  bootblock_early_cpu_init(), so the decision lands in the cbmem log.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ src/cpu/intel/haswell/Makefile.mk |  1 +
+ src/cpu/intel/haswell/bootblock.c | 49 +++++++++++++++++++++++++++++++
+ 2 files changed, 50 insertions(+)
+
+diff --git a/src/cpu/intel/haswell/Makefile.mk b/src/cpu/intel/haswell/Makefile.mk
+index a3765d75d1..78b09128ae 100644
+--- a/src/cpu/intel/haswell/Makefile.mk
++++ b/src/cpu/intel/haswell/Makefile.mk
+@@ -1,6 +1,7 @@
+ ## SPDX-License-Identifier: GPL-2.0-only
+ 
+ bootblock-y += bootblock.c
++bootblock-y += ../common/hyperthreading.c
+ bootblock-y += ../car/non-evict/cache_as_ram.S
+ bootblock-y += ../car/bootblock.c
+ bootblock-y += ../../x86/early_reset.S
+diff --git a/src/cpu/intel/haswell/bootblock.c b/src/cpu/intel/haswell/bootblock.c
+index 10da068939..0039fa596e 100644
+--- a/src/cpu/intel/haswell/bootblock.c
++++ b/src/cpu/intel/haswell/bootblock.c
+@@ -2,10 +2,13 @@
+ 
+ #include <stdint.h>
+ #include <arch/bootblock.h>
++#include <console/console.h>
++#include <cpu/intel/common/common.h>
+ #include <cpu/x86/msr.h>
+ #include <arch/io.h>
+ #include <delay.h>
+ #include <halt.h>
++#include <option.h>
+ 
+ #include "haswell.h"
+ 
+@@ -66,3 +69,49 @@ void bootblock_early_cpu_init(void)
+ 	/* Set flex ratio and reset if needed */
+ 	set_flex_ratio_to_tdp_nominal();
+ }
++
++/*
++ * Honor the "hyper_threading" option the way cpu/intel/model_206ax does:
++ * SOFT_RESET_DATA bit 0 is fed to the CPU as the SMT-disable strap on the
++ * next CPU-only reset. The register survives warm resets, so the reset
++ * below only fires when the requested value actually changes.
++ *
++ * Gate on intel_ht_or_mc_supported() rather than intel_ht_supported():
++ * once SMT is strapped off, CPUID's SMT level reports one thread and
++ * intel_ht_supported() returns false, which would leave the strap stuck
++ * until a cold boot cleared it. The HTT capability bit survives the strap.
++ *
++ * This runs from bootblock_cpu_init() rather than the early hook so the
++ * console is up and the decision lands in the cbmem log.
++ */
++void bootblock_cpu_init(void)
++{
++	u32 soft_reset, wanted;
++
++	if (!intel_ht_or_mc_supported())
++		return;
++
++	soft_reset = RCBA32(SOFT_RESET_DATA);
++	wanted = soft_reset & ~1;
++	wanted |= !get_uint_option("hyper_threading", 1);
++
++	printk(BIOS_DEBUG, "CPU supports SMT, respecting option hyper_threading=%s\n",
++	       (wanted & 1) ? "Disable" : "Enable");
++
++	if (wanted == soft_reset)
++		return;
++
++	RCBA32(SOFT_RESET_DATA) = wanted;
++
++	/* Set soft reset control to use register value */
++	RCBA32_OR(SOFT_RESET_CTRL, 1);
++
++	/* Delay before reset to avoid potential TPM lockout */
++	if (CONFIG(TPM))
++		mdelay(30);
++
++	/* Issue warm reset, will be "CPU only" due to soft reset data */
++	outb(0x0, 0xcf9);
++	outb(0x6, 0xcf9);
++	halt();
++}
+-- 
+2.55.0
+

@@ -1,0 +1,61 @@
+From 1549c42ff1deaea62b960ea089e14ec8e3a90ccd Mon Sep 17 00:00:00 2001
+From: appkins <nbatkins@gmail.com>
+Date: Tue, 4 Aug 2026 18:09:18 -0500
+Subject: [PATCH 1/3] cpu/intel/haswell: honor a runtime "vmx" option
+
+Let the payload's setup menu (and, on the NUC5i7RYH, the Redfish BIOS
+attribute bridge) toggle VT-x without a reflash. cpu_core_init() used
+set_vmx_and_lock(), which bakes CONFIG(ENABLE_VMX) in at build time;
+route it through set_feature_ctrl_vmx_arg() with the value of the "vmx"
+option instead, defaulting to the Kconfig value when the option is
+absent. The MSR is still locked either way, matching vendor firmware
+semantics: a disabled VMX cannot be re-enabled by the OS.
+
+The option is read once on the BSP in pre_mp_init() because the option
+backend reads SPI flash, which the APs must not race when they run
+cpu_core_init() concurrently.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ src/cpu/intel/haswell/haswell_init.c | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/src/cpu/intel/haswell/haswell_init.c b/src/cpu/intel/haswell/haswell_init.c
+index 4997681591..2e34d853d7 100644
+--- a/src/cpu/intel/haswell/haswell_init.c
++++ b/src/cpu/intel/haswell/haswell_init.c
+@@ -487,6 +487,10 @@ static void configure_mca(void)
+ 	mca_clear_status();
+ }
+ 
++/* Read once on the BSP in pre_mp_init(): the option backend reads SPI flash,
++   which the APs must not race when they run cpu_core_init() concurrently. */
++static bool vmx_enable = CONFIG(ENABLE_VMX);
++
+ /* All CPUs including BSP will run the following function. */
+ static void cpu_core_init(struct device *cpu)
+ {
+@@ -495,8 +499,9 @@ static void cpu_core_init(struct device *cpu)
+ 
+ 	enable_lapic_tpr();
+ 
+-	/* Set virtualization based on Kconfig option */
+-	set_vmx_and_lock();
++	/* Set virtualization based on the "vmx" option, then lock the MSR */
++	set_feature_ctrl_vmx_arg(vmx_enable);
++	set_feature_ctrl_lock();
+ 
+ 	/* Configure C States */
+ 	configure_c_states();
+@@ -520,6 +525,8 @@ static void cpu_core_init(struct device *cpu)
+ /* MP initialization support. */
+ static void pre_mp_init(void)
+ {
++	vmx_enable = get_uint_option("vmx", CONFIG(ENABLE_VMX));
++
+ 	/* Setup MTRRs based on physical address size. */
+ 	x86_setup_mtrrs_with_detect();
+ 	x86_mtrr_check();
+-- 
+2.55.0
+

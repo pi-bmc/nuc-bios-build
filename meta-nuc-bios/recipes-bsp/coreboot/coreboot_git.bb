@@ -33,13 +33,19 @@ inherit deploy
 # AFTERG3_EN it lives in the suspend well, so it survives an AC cycle without
 # depending on RTC-well state). See files/mainboard/README.md.
 #
-# 0004 stays a patch because it modifies an existing upstream file
-# (southbridge/intel/lynxpoint/acpi/xhci.asl), which files/mainboard/ cannot
-# express.
+# 0001-0003 are patches because they modify existing upstream files, which
+# files/mainboard/ cannot express. They back the CFR "Processor" form (VT-x,
+# VT-d, Hyper-Threading toggles; see files/mainboard/cfr.c): 0001 routes
+# haswell's set_vmx_and_lock() through the "vmx" option, 0002 gates the DMAR
+# table and the Broadwell VT-d BARs on "vtd", 0003 ports model_206ax's
+# SOFT_RESET_DATA SMT strap to the haswell bootblock as "hyper_threading".
 #
 # do_extract_blobs pins the vboot submodule URL explicitly so it never
 # depends on what bitbake set origin to.
 SRC_URI = "${COREBOOT_GIT_URI} \
+           file://0001-cpu-intel-haswell-honor-a-runtime-vmx-option.patch \
+           file://0002-nb-intel-haswell-broadwell-honor-a-runtime-vtd-optio.patch \
+           file://0003-cpu-intel-haswell-add-a-runtime-hyper_threading-opti.patch \
            file://mainboard \
            file://blobs \
            file://nuc5i7ryh.config \

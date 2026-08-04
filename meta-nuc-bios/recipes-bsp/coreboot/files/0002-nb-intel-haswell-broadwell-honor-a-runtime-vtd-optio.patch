@@ -1,0 +1,76 @@
+From 5c0cd38fba320fd8e4de365fa897ce5ecb2cfb75 Mon Sep 17 00:00:00 2001
+From: appkins <nbatkins@gmail.com>
+Date: Tue, 4 Aug 2026 18:09:18 -0500
+Subject: [PATCH 2/3] nb/intel/haswell,broadwell: honor a runtime "vtd" option
+
+Gate VT-d behind a "vtd" option (default enabled) so the payload's
+setup menu can turn it off without a reflash, the way vendor firmware
+does. Two halves, both belt and braces:
+
+- northbridge_write_acpi_tables() skips the DMAR table, which is the
+  part the OS actually keys off; without a DMAR no OS enables either
+  DMA remapping or interrupt remapping.
+- Broadwell's systemagent_early_init() leaves GFXVTBAR/VTVC0BAR
+  unprogrammed, so the remapping units are not even addressable. This
+  also means the DMAR path MUST stay gated on the same option: with
+  the BARs disabled it would otherwise emit a DMAR with no DRHDs.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ src/northbridge/intel/broadwell/early_init.c | 5 ++++-
+ src/northbridge/intel/haswell/acpi.c         | 6 +++++-
+ 2 files changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/src/northbridge/intel/broadwell/early_init.c b/src/northbridge/intel/broadwell/early_init.c
+index d50c2fc0f3..3631973495 100644
+--- a/src/northbridge/intel/broadwell/early_init.c
++++ b/src/northbridge/intel/broadwell/early_init.c
+@@ -3,6 +3,7 @@
+ #include <device/mmio.h>
+ #include <device/pci_ops.h>
+ #include <northbridge/intel/haswell/memmap.h>
++#include <option.h>
+ #include <soc/iomap.h>
+ #include <soc/pci_devs.h>
+ #include <soc/romstage.h>
+@@ -37,7 +38,9 @@ void systemagent_early_init(void)
+ 	/* Device enable: IGD and Mini-HD */
+ 	pci_write_config32(HOST_BRIDGE, DEVEN, DEVEN_D0EN | DEVEN_D2EN | DEVEN_D3EN);
+ 
+-	if (!vtd_capable)
++	/* Leave the VT-d units unprogrammed when disabled by the "vtd" option;
++	   northbridge_write_acpi_tables() then omits the DMAR table too. */
++	if (!vtd_capable || !get_uint_option("vtd", 1))
+ 		return;
+ 
+ 	/* Setup BARs: zeroize top 32 bits; set enable bit */
+diff --git a/src/northbridge/intel/haswell/acpi.c b/src/northbridge/intel/haswell/acpi.c
+index 58c1f5bba8..75e889b06c 100644
+--- a/src/northbridge/intel/haswell/acpi.c
++++ b/src/northbridge/intel/haswell/acpi.c
+@@ -5,6 +5,7 @@
+ #include <console/console.h>
+ #include <device/device.h>
+ #include <device/pci_ops.h>
++#include <option.h>
+ #include <southbridge/intel/lynxpoint/pch.h>
+ #include <types.h>
+ 
+@@ -71,10 +72,13 @@ unsigned long northbridge_write_acpi_tables(const struct device *const dev,
+ 					    unsigned long current,
+ 					    struct acpi_rsdp *const rsdp)
+ {
+-	/* Create DMAR table only if we have VT-d capability. */
++	/* Create DMAR table only if we have VT-d capability and it is not
++	   disabled by the "vtd" option. */
+ 	const u32 capid0_a = pci_read_config32(dev, CAPID0_A);
+ 	if (capid0_a & VTD_DISABLE)
+ 		return current;
++	if (!get_uint_option("vtd", 1))
++		return current;
+ 
+ 	acpi_dmar_t *const dmar = (acpi_dmar_t *)current;
+ 	printk(BIOS_DEBUG, "ACPI:    * DMAR\n");
+-- 
+2.55.0
+

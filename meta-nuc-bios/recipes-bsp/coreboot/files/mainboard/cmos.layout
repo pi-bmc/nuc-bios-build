@@ -16,9 +16,9 @@
 #                  must stay OUTSIDE the coreboot checksum range -- that is why
 #                  the checksum stops at 415, and why every board option has to
 #                  fit in bits 392..415 (bytes 49..51).
-#   bits 411..415  the last five free bits in that window. All five are used
-#                  below; adding another option means reclaiming 392..394 or
-#                  399..407, NOT extending the checksum past 415.
+#   bits 392..394  and 411..415 are all used below; adding another option
+#                  means reclaiming 399..407, NOT extending the checksum
+#                  past 415.
 
 # -----------------------------------------------------------------
 entries
@@ -34,6 +34,14 @@ entries
 388	4	h	0	reboot_counter
 
 # -----------------------------------------------------------------
+# CPU feature toggles. These names are the cfr.c opt_names:
+#   vmx             -> cpu/intel/haswell/haswell_init.c (patch 0001), VT-x
+#   vtd             -> northbridge DMAR + VT-d BARs (patch 0002)
+#   hyper_threading -> cpu/intel/haswell/bootblock.c (patch 0003), SMT strap
+392	1	e	1	vmx
+393	1	e	1	vtd
+394	1	e	1	hyper_threading
+
 # coreboot config options: console
 395	4	e	6	debug_level
 

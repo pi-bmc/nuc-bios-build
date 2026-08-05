@@ -38,13 +38,29 @@ aligned with en-US. That alignment is what lets SetString then address prompt
 tokens minted before the package existed, and it is preserved afterwards
 because each later NewString appends a blank to every language.
 
+Those blanks then have to be filled in for the one-of options as well, not just
+the question prompts. RedfishPlatformConfigDxe reads an option's name with
+HiiGetRedfishString and falls back to the English text only when that returns
+NULL -- which it does when the string is *absent*. A blank one is present, so
+the fallback is skipped and every enumeration attribute reports
+
+    "CurrentValue": "",
+    "DefaultValue": "",
+
+with no error logged anywhere, because nothing failed. (The empty string rather
+than JSON null is the tell: BiosAttributeRegistry writes null when the lookup
+fails, so "" means it succeeded and found nothing.) Publishing each option's UI
+name in the same language restores real values. RedfishClientPkg's own sample
+form never hit this because its .uni compiles genuine x-UEFI-redfish strings for
+its options.
+
 Upstream-Status: Inappropriate [platform specific]
 Signed-off-by: nuc-bios-build <nbatkins@gmail.com>
 ---
  UefiPayloadPkg/CfrSetupMenuDxe/CfrSetupMenuDxe.inf |  1 +
  UefiPayloadPkg/CfrSetupMenuDxe/SetupMenu.h         | 26 ++++++++++++++++++++++++++
- UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c      | 142 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 169 insertions(+)
+ UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c      | 183 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 210 insertions(+)
 
 diff --git a/UefiPayloadPkg/CfrSetupMenuDxe/CfrSetupMenuDxe.inf b/UefiPayloadPkg/CfrSetupMenuDxe/CfrSetupMenuDxe.inf
 --- a/UefiPayloadPkg/CfrSetupMenuDxe/CfrSetupMenuDxe.inf
@@ -103,7 +119,7 @@ diff --git a/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c b/UefiPayloadPkg/CfrS
  #include <Library/VariablePolicyHelperLib.h>
  #include <Library/UefiRuntimeServicesTableLib.h>
  #include <Guid/CfrSetupMenuGuid.h>
-@@ -60,6 +62,142 @@
+@@ -60,6 +62,182 @@
    }
  }
  
@@ -170,6 +186,46 @@ diff --git a/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c b/UefiPayloadPkg/CfrS
 +
 +  mCfrRedfishLanguageReady = TRUE;
 +  return TRUE;
++}
++
++/**
++  Publish a one-of option's name in the Redfish language.
++
++  Needed because of how CfrEnsureRedfishStringPackage creates that package: it
++  back-fills a *blank* string for every ID already in use, and a blank is not
++  the same as an absent one. RedfishPlatformConfigDxe reads an option's name
++  with HiiGetRedfishString and falls back to the English text only when that
++  returns NULL -- which happens when the string does not exist. An empty string
++  exists, so the fallback is skipped and the attribute's CurrentValue and
++  DefaultValue come out as "" rather than "Enabled".
++
++  Giving every option a real string in that language is what keeps the values
++  readable. The UI name is the right text: it is what the option is called in
++  the setup menu, and Redfish shows it as both the value name and its display
++  name.
++
++  @param[in] StringId  HII string ID of the option's UI name.
++  @param[in] UiName    The option's UI name.
++**/
++STATIC
++VOID
++EFIAPI
++CfrPublishRedfishOptionName (
++  IN EFI_STRING_ID  StringId,
++  IN CHAR16         *UiName
++  )
++{
++  if ((StringId == 0) || (UiName == NULL) || (UiName[0] == CHAR_NULL)) {
++    return;
++  }
++
++  if (!CfrEnsureRedfishStringPackage ()) {
++    return;
++  }
++
++  if (HiiSetString (mSetupMenuPrivate.HiiHandle, StringId, UiName, CFR_REDFISH_SCHEMA_LANGUAGE) == 0) {
++    DEBUG ((DEBUG_ERROR, "CFR: failed to publish option \"%s\" to Redfish\n", UiName));
++  }
 +}
 +
 +/**
@@ -246,7 +302,7 @@ diff --git a/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c b/UefiPayloadPkg/CfrS
  /**
    CFR_VARBINARY records are used to store a list of dependency values.
    Get a pointer to an array of enum values and its length.
-@@ -544,6 +682,8 @@
+@@ -544,6 +722,8 @@
    CfrConvertVarBinaryToStrings (CfrDisplayName, &HiiDisplayString, &HiiDisplayStringId);
    FreePool (HiiDisplayString);
  
@@ -255,7 +311,15 @@ diff --git a/UefiPayloadPkg/CfrSetupMenuDxe/SetupMenuCfr.c b/UefiPayloadPkg/CfrS
    if (CfrHelpText != NULL) {
      CfrConvertVarBinaryToStrings (CfrHelpText, &HiiHelpText, &HiiHelpTextId);
      FreePool (HiiHelpText);
-@@ -799,6 +939,8 @@
+@@ -566,6 +746,7 @@
+       CfrEnumUiString = (CFR_VARBINARY *)((UINT8 *)CfrEnumValues + sizeof (CFR_ENUM_VALUE));
+       ASSERT (CfrEnumUiString->tag == CB_TAG_CFR_VARCHAR_UI_NAME);
+       CfrConvertVarBinaryToStrings (CfrEnumUiString, &HiiEnumStrings, &HiiEnumStringsId);
++      CfrPublishRedfishOptionName (HiiEnumStringsId, HiiEnumStrings);
+       FreePool (HiiEnumStrings);
+ 
+       TempHiiBuffer = HiiCreateOneOfOptionOpCode (
+@@ -799,6 +980,8 @@
    CfrConvertVarBinaryToStrings (CfrDisplayName, &HiiDisplayString, &HiiDisplayStringId);
    FreePool (HiiDisplayString);
  

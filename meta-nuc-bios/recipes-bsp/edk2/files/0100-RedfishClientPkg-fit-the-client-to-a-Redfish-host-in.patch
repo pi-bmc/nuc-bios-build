@@ -1,9 +1,9 @@
-From ac1a2dd533a2f2c1783cedb22932df3356e0e783 Mon Sep 17 00:00:00 2001
+From 4735ec3cbab7567e3c8f656ef3d18693a9412b35 Mon Sep 17 00:00:00 2001
 From: appkins <nbatkins@gmail.com>
-Date: Tue, 4 Aug 2026 15:10:34 -0500
+Date: Tue, 4 Aug 2026 18:46:46 -0500
 Subject: [PATCH] RedfishClientPkg: fit the client to a Redfish host interface
 
-Two changes for a platform where the BMC is reached over DSP0270's
+Three changes for a platform where the BMC is reached over DSP0270's
 point-to-point USB link and serves exactly one managed host.
 
 1. Accept the single ComputerSystem.
@@ -43,18 +43,30 @@ modules from SMBIOS type 17 instead -- the same place it already gets
 BiosVersion, Manufacturer, Model and SerialNumber, and the same records the OS
 reads.
 
+3. Drop the HiiToRedfishBiosDxe sample form.
+
+HiiToRedfishBiosDxe is a demo driver: its only HII content is the built-in
+sample form HiiToRedfishBiosVfr.vfr -- BiosOption1..4, one question per
+attribute type, in the x-UEFI-redfish-Bios.v1_0_9 namespace. Built into a
+firmware it surfaces four fake attributes in /Bios/Attributes and the
+BiosAttributeRegistry right next to the platform's real options. The real
+path needs no help from it: RedfishPlatformConfigDxe walks the platform's
+own x-UEFI-redfish HII questions (CfrSetupMenuDxe publishes one per CFR
+option) and BiosDxe/BiosAttributeRegistryDxe consume that.
+
 Upstream-Status: Inappropriate [platform specific]
 Signed-off-by: nuc-bios-build <nbatkins@gmail.com>
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
- RedfishClientPkg/RedfishClient.fdf.inc        |  9 ++--
- .../RedfishClientComponents.dsc.inc           | 46 ++++++++++++++++---
- 2 files changed, 44 insertions(+), 11 deletions(-)
+ RedfishClientPkg/RedfishClient.fdf.inc        | 12 ++--
+ .../RedfishClientComponents.dsc.inc           | 56 ++++++++++++++++---
+ 2 files changed, 55 insertions(+), 13 deletions(-)
 
 diff --git a/RedfishClientPkg/RedfishClient.fdf.inc b/RedfishClientPkg/RedfishClient.fdf.inc
-index 62063a93..101d4856 100644
+index 62063a93d..ade12eb73 100644
 --- a/RedfishClientPkg/RedfishClient.fdf.inc
 +++ b/RedfishClientPkg/RedfishClient.fdf.inc
-@@ -16,13 +16,14 @@
+@@ -16,15 +16,17 @@
    INF RedfishClientPkg/RedfishFeatureCoreDxe/RedfishFeatureCoreDxe.inf
    INF RedfishClientPkg/RedfishETagDxe/RedfishETagDxe.inf
    INF RedfishClientPkg/RedfishConfigLangMapDxe/RedfishConfigLangMapDxe.inf
@@ -70,9 +82,13 @@ index 62063a93..101d4856 100644
    INF RedfishClientPkg/Features/BiosAttributeRegistry/v1_3_6/BiosAttributeRegistryDxe.inf
 -  INF RedfishClientPkg/HiiToRedfishMemoryDxe/HiiToRedfishMemoryDxe.inf
    INF RedfishClientPkg/HiiToRedfishBootDxe/HiiToRedfishBootDxe.inf
-   INF RedfishClientPkg/HiiToRedfishBiosDxe/HiiToRedfishBiosDxe.inf
+-  INF RedfishClientPkg/HiiToRedfishBiosDxe/HiiToRedfishBiosDxe.inf
++  # HiiToRedfishBiosDxe (the BiosOption1..4 sample form) is deliberately
++  # absent -- see the note in RedfishClientComponents.dsc.inc.
    INF RedfishClientPkg/Features/BootOptionCollection/BootOptionCollectionDxe.inf
-@@ -34,8 +35,6 @@
+   INF RedfishClientPkg/Features/BootOption/v1_0_4/Dxe/BootOptionDxe.inf
+   INF RedfishClientPkg/Features/SecureBoot/v1_1_0/Dxe/SecureBootDxe.inf
+@@ -34,8 +36,6 @@
    #
    # Below two modules should be pulled in by build tool.
    #
@@ -82,10 +98,10 @@ index 62063a93..101d4856 100644
    INF RedfishClientPkg/Converter/ComputerSystemCollection/RedfishComputerSystemCollection_Dxe.inf
    INF RedfishClientPkg/Converter/Bios/v1_0_9/RedfishBios_V1_0_9_Dxe.inf
 diff --git a/RedfishClientPkg/RedfishClientComponents.dsc.inc b/RedfishClientPkg/RedfishClientComponents.dsc.inc
-index 6cb20be7..05282c3f 100644
+index 6cb20be7c..42f604e2b 100644
 --- a/RedfishClientPkg/RedfishClientComponents.dsc.inc
 +++ b/RedfishClientPkg/RedfishClientComponents.dsc.inc
-@@ -18,7 +18,28 @@
+@@ -18,19 +18,63 @@
    RedfishClientPkg/RedfishFeatureCoreDxe/RedfishFeatureCoreDxe.inf
    RedfishClientPkg/RedfishETagDxe/RedfishETagDxe.inf
    RedfishClientPkg/RedfishConfigLangMapDxe/RedfishConfigLangMapDxe.inf
@@ -113,9 +129,18 @@ index 6cb20be7..05282c3f 100644
 +  # SerialNumber, and the same records the OS reads.
 +  #
    RedfishClientPkg/HiiToRedfishBootDxe/HiiToRedfishBootDxe.inf
-   RedfishClientPkg/HiiToRedfishBiosDxe/HiiToRedfishBiosDxe.inf
+-  RedfishClientPkg/HiiToRedfishBiosDxe/HiiToRedfishBiosDxe.inf
++  #
++  # HiiToRedfishBiosDxe is deliberately absent as well. It is a demo driver:
++  # its only HII content is the built-in sample form HiiToRedfishBiosVfr.vfr
++  # (BiosOption1..4, one question per attribute type), which surfaces four
++  # fake attributes in /Bios/Attributes and its registry. The real BIOS
++  # attribute path is RedfishPlatformConfigDxe walking the platform's own
++  # x-UEFI-redfish HII questions (CfrSetupMenuDxe publishes them), consumed
++  # by BiosDxe and BiosAttributeRegistryDxe above.
++  #
    RedfishClientPkg/RedfishTaskServiceDxe/RedfishTaskServiceDxe.inf
-@@ -26,11 +47,26 @@
+ !endif
    #
    # Below two modules should be pulled in by build tool.
    #
@@ -145,7 +170,7 @@ index 6cb20be7..05282c3f 100644
    }
    RedfishClientPkg/Features/ComputerSystemCollectionDxe/ComputerSystemCollectionDxe.inf
    RedfishClientPkg/Features/Bios/v1_0_9/Dxe/BiosDxe.inf
-@@ -44,8 +80,6 @@
+@@ -44,8 +88,6 @@
    #
    # Below two modules should be pulled in by build tool.
    #

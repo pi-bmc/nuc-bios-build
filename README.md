@@ -146,5 +146,7 @@ SPI unlocked (`BOOTMEDIA_LOCK_NONE`). A machine still on the stock Intel BIOS
 has `SMM_BWP` set and cannot self-flash — use `scripts/nuc-spi.sh` with the
 clip once to get coreboot on in the first place.
 
-Recovery if it won't POST: flash the factory backup back with the clip,
-`flashrom -p <programmer> --ifd -i bios -w stock-bios.rom`.
+Recovery if it won't POST: clip back on and restore the factory backup with
+`./scripts/nuc-spi.sh restore stock-bios.rom` — it validates the descriptor in
+the image, checks the size, and prompts before the whole-chip write. See
+[docs/external-flashing.md](docs/external-flashing.md).

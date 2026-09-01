@@ -91,8 +91,9 @@ COMPATIBLE_MACHINE = "nuc5i7ryh"
 # cross toolchain comes prebuilt (sstate-cached) from
 # coreboot-toolchain-native -- editing this recipe no longer re-runs the
 # ~30-minute crossgcc bootstrap. (The edk2 payload likewise builds in its
-# own recipe.)
-DEPENDS = "bison-native flex-native python3-native util-linux-native nasm-native acpica-native coreboot-toolchain-native"
+# own recipe.) openssl-native: GenerateCapsule.py shells out to openssl to
+# sign the capsule built in do_deploy below.
+DEPENDS = "bison-native flex-native python3-native util-linux-native nasm-native acpica-native coreboot-toolchain-native openssl-native"
 
 # Where the staged toolchain lands (coreboot-toolchain-native installs it
 # under ${datadir}); coreboot's Makefile takes it via XGCCPATH (trailing
@@ -278,6 +279,110 @@ do_compile() {
     oe_runmake XGCCPATH=${XGCC}
 }
 
+# --- UEFI capsule: RMAP manifest + signed .cap --------------------------
+#
+# This is the ONLY recipe with the finished ROM. edk2-uefipayload's
+# do_deploy publishes UEFIPAYLOAD.fd, one of coreboot.rom's inputs; the
+# assembled 8 MiB image (mainboard, blobs, the payload embedded via
+# PAYLOAD_FILE) exists for the first time right here, in do_deploy below.
+# A capsule built from the payload alone would be missing everything
+# coreboot itself contributes, so capsule generation belongs in this
+# recipe, not edk2-uefipayload_2605.bb.
+#
+# Without the RMAP manifest, FmpDeviceSmmLib falls back to a full-flash
+# write -- its own header calls region selectivity future work -- which
+# overwrites SMMSTORE and resets the variable store: boot entries, Secure
+# Boot state, CFR settings, gone. AppendRmapManifest.py's own docstring
+# states the fallback plainly: "If the manifest is absent, firmware falls
+# back to full-flash updates." The manifest built below lists COREBOOT
+# only -- SMMSTORE, RW_MRC_CACHE and FMAP stay out of every write range,
+# which is what lets FmpDeviceSmmLib set VariableStorePreserved and keep
+# the variable services (and therefore FmpDxe's LastAttemptStatus, which
+# Task 5's scanner and Task 7's Redfish report both depend on) alive
+# through an update. The guard below fails the build rather than let an
+# unmanifested capsule out the door silently.
+#
+# GUID d25f89e1-94ec-4533-80b9-7f8855ce0a94 must stay identical in FOUR
+# places: coreboot's own CONFIG_DRIVERS_EFI_MAIN_FW_GUID
+# (payload-edk2.config), the payload's CAPSULE_MAIN_FW_GUID
+# (edk2-uefipayload_2605.bb's NUC_CAPSULE_GUID), the capsule generated
+# below, and the ESRT entry those two Kconfigs produce. A mismatch means
+# the capsule silently matches no FMP at runtime.
+NUC_CAPSULE_GUID ??= "d25f89e1-94ec-4533-80b9-7f8855ce0a94"
+NUC_CAPSULE_VERSION ??= "1"
+NUC_CAPSULE_LSV ??= "1"
+
+# Signing identity -- MUST resolve to the same certificate
+# edk2-uefipayload_2605.bb embedded into UefiPayloadPkg.dsc's
+# PcdFmpDevicePkcs7CertBufferXdr at its do_configure time, or a capsule
+# built here authenticates against a certificate FmpDxe does not trust and
+# every update is silently refused at runtime (LastAttemptStatus records
+# it; nothing at build time can catch a mismatch between two independently
+# resolved identities). Defaults identical to edk2-uefipayload_2605.bb's,
+# so the common case -- neither variable configured -- has both recipes
+# independently arrive at the same generated keypair under
+# NUC_CAPSULE_KEYDIR with nothing threaded between them.
+NUC_CAPSULE_KEYDIR ??= "${TOPDIR}/nuc-capsule-keys"
+NUC_CAPSULE_CERT ??= ""
+NUC_CAPSULE_KEY ??= ""
+
+# Where edk2-uefipayload_2605.bb's do_deploy staged AppendRmapManifest.py and
+# the BaseTools/Source/Python tree GenerateCapsule.py needs (it is not
+# self-contained -- it imports Common.Uefi.Capsule.* siblings). DEPLOYDIR is
+# the same physical directory for both recipes on this machine (both are
+# machine-specific "deploy"-class recipes for nuc5i7ryh; nuc-coreboot-rom.bb
+# already reads coreboot-nuc5i7ryh.rom, UEFIPAYLOAD.fd and ipxe.rom out of
+# that one shared tree), so this is a same-directory reference, not a
+# cross-multiconfig reach.
+EDK2_CAPSULE_TOOLS = "${DEPLOYDIR}/edk2-capsule-tools"
+
+# Refuse EDK2's own published test certificate chain
+# (BaseTools/Source/Python/Pkcs7Sign) no matter how it got configured. Its
+# private keys ship in every edk2 checkout, so a capsule signed against it
+# validates on any board running this firmware -- shipping it defeats
+# signing entirely.
+nuc_capsule_reject_test_cert() {
+    label="$1"; path="$2"
+    resolved=$(readlink -f "$path" 2>/dev/null || echo "$path")
+    case "$resolved" in
+        */Pkcs7Sign/Test*)
+            bbfatal "$label '$path' resolves to '$resolved' -- EDK2's own published test certificate chain. Configure NUC_CAPSULE_CERT/NUC_CAPSULE_KEY with a real identity, or leave both unset to use the keypair edk2-uefipayload_2605.bb generates under NUC_CAPSULE_KEYDIR."
+            ;;
+    esac
+}
+
+# Resolve $fmp_cert (DER) / $fmp_signer (PEM key+cert) for signing. Does NOT
+# generate a keypair -- edk2-uefipayload_2605.bb's do_configure already must
+# have run (do_configure[depends] below covers the ordering) and either
+# used an operator-supplied identity or generated one under the same
+# NUC_CAPSULE_KEYDIR default; if neither is configured and nothing was
+# generated, that is a build-ordering problem, not something to paper over
+# by generating a second, different keypair here.
+nuc_capsule_resolve_keys() {
+    fmp_cert="${NUC_CAPSULE_CERT}"
+    fmp_signer="${NUC_CAPSULE_KEY}"
+
+    if [ -z "$fmp_cert" ] && [ -z "$fmp_signer" ]; then
+        fmp_keydir="${NUC_CAPSULE_KEYDIR}"
+        for f in capsule.cer capsule.pem; do
+            [ -e "$fmp_keydir/$f" ] || \
+                bbfatal "no capsule signing key at $fmp_keydir/$f -- edk2-uefipayload's do_configure generates this keypair when NUC_CAPSULE_CERT/NUC_CAPSULE_KEY are unset. Build edk2-uefipayload before coreboot (the normal order; do_configure already depends on its do_deploy for UEFIPAYLOAD.fd), or set NUC_CAPSULE_CERT/NUC_CAPSULE_KEY here to wherever the signing identity actually lives."
+        done
+        fmp_cert="$fmp_keydir/capsule.cer"
+        fmp_signer="$fmp_keydir/capsule.pem"
+    fi
+
+    [ -r "$fmp_cert" ] || bbfatal "NUC_CAPSULE_CERT '$fmp_cert' is not readable."
+    if [ -n "$fmp_signer" ] && [ ! -r "$fmp_signer" ]; then
+        bbfatal "NUC_CAPSULE_KEY '$fmp_signer' is not readable."
+    fi
+
+    nuc_capsule_reject_test_cert "NUC_CAPSULE_CERT" "$fmp_cert"
+    if [ -n "$fmp_signer" ]; then
+        nuc_capsule_reject_test_cert "NUC_CAPSULE_KEY" "$fmp_signer"
+    fi
+}
+
 do_deploy() {
     install -d ${DEPLOYDIR}
     install -m 0644 ${B}/build/coreboot.rom ${DEPLOYDIR}/coreboot-nuc5i7ryh.rom
@@ -285,7 +390,73 @@ do_deploy() {
     if [ -z "${COREBOOT_BLOBS_DIR}" ] && [ "${COREBOOT_USE_DONOR_BLOBS}" != "1" ]; then
         echo "built without mrc.bin/refcode.elf -- compile check only, do not flash" \
             > ${DEPLOYDIR}/coreboot-nuc5i7ryh.rom.NOT-BOOTABLE
+        bbnote "coreboot-nuc5i7ryh.rom is a blob-less compile check -- skipping capsule generation, there is nothing bootable to update to"
+        return 0
     fi
+
+    # --- Step 1: append the RMAP manifest and generate the capsule -------
+    tools="${EDK2_CAPSULE_TOOLS}"
+    [ -d "$tools" ] || \
+        bbfatal "no capsule tooling at $tools -- build edk2-uefipayload before coreboot; do_configure already depends on its do_deploy for UEFIPAYLOAD.fd, and this needs the same ordering for its Tools/BaseTools staging."
+
+    python3 "$tools/AppendRmapManifest.py" \
+        --region COREBOOT \
+        -o "${B}/coreboot-rmap.rom" "${DEPLOYDIR}/coreboot-nuc5i7ryh.rom"
+    install -m 0644 ${B}/coreboot-rmap.rom ${DEPLOYDIR}/coreboot-nuc5i7ryh-rmap.rom
+
+    # --- Step 2: guard the manifest ---------------------------------------
+    # AppendRmapManifest.py silently produces a plain copy if it is ever
+    # invoked wrong (or if a future edit here drops the --region argument):
+    # its own docstring says the fallback plainly, "If the manifest is
+    # absent, firmware falls back to full-flash updates." That must fail
+    # the build, not warn.
+    python3 - "${B}/coreboot-rmap.rom" <<'PY'
+import struct, sys
+p = sys.argv[1]
+d = open(p, 'rb').read()
+sig, ver, n = struct.unpack('<IHH', d[-8:])
+assert sig == 0x50414D52, "RMAP signature missing -- capsule would silently full-flash"
+assert n >= 1, "RMAP manifest is empty"
+print("RMAP ok: version {}, {} region(s)".format(ver, n))
+PY
+
+    # --- Step 3: resolve and validate the signer --------------------------
+    nuc_capsule_resolve_keys
+
+    if [ -z "$fmp_signer" ]; then
+        bbwarn "NUC_CAPSULE_CERT is set but NUC_CAPSULE_KEY is not, so no capsule was built -- the private key is not available to this build. Sign one offline against ${DEPLOYDIR}/coreboot-nuc5i7ryh-rmap.rom with edk2's BaseTools/Source/Python/Capsule/GenerateCapsule.py; the arguments must match this build's --guid ${NUC_CAPSULE_GUID} --fw-version ${NUC_CAPSULE_VERSION} --lsv ${NUC_CAPSULE_LSV}."
+        return 0
+    fi
+
+    # GenerateCapsule wants PEM for --other-public-cert and
+    # --trusted-public-cert, and both are mandatory even for a self-signed
+    # certificate that is its own chain and its own anchor.
+    other_pub="${B}/nuc-capsule-cert.pub.pem"
+    openssl x509 -inform DER -in "$fmp_cert" -out "$other_pub" \
+        || bbfatal "could not convert '$fmp_cert' to PEM for GenerateCapsule"
+
+    # Run the script directly with PYTHONPATH set, rather than through the
+    # BaseTools/BinWrappers/PosixLike/GenerateCapsule wrapper: the wrapper
+    # is generated by edk2-uefipayload's own do_compile (`oe_runmake -C
+    # BaseTools`) inside ITS WORKDIR, which this recipe does not reach into
+    # (see the EDK2_CAPSULE_TOOLS comment above) -- only the staged
+    # Source/Python tree travels through DEPLOYDIR.
+    # --signing-tool-path pins openssl to this recipe's own native sysroot
+    # (the DEPENDS += "openssl-native" above), the same binary every check
+    # above used, instead of whatever openssl happens to be on PATH.
+    PYTHONPATH="$tools/BaseTools-Source-Python" python3 \
+        "$tools/BaseTools-Source-Python/Capsule/GenerateCapsule.py" \
+        --encode --guid ${NUC_CAPSULE_GUID} \
+        --fw-version ${NUC_CAPSULE_VERSION} --lsv ${NUC_CAPSULE_LSV} \
+        --signer-private-cert "$fmp_signer" \
+        --other-public-cert   "$other_pub" \
+        --trusted-public-cert "$other_pub" \
+        --signing-tool-path "${STAGING_BINDIR_NATIVE}" \
+        -o "${DEPLOYDIR}/nuc-firmware.cap" "${B}/coreboot-rmap.rom" \
+        || bbfatal "GenerateCapsule failed to build ${DEPLOYDIR}/nuc-firmware.cap"
+
+    chmod 0644 "${DEPLOYDIR}/nuc-firmware.cap"
+    bbnote "Built ${DEPLOYDIR}/nuc-firmware.cap: image type ${NUC_CAPSULE_GUID}, version ${NUC_CAPSULE_VERSION}, lsv ${NUC_CAPSULE_LSV}."
 }
 
 addtask deploy after do_compile

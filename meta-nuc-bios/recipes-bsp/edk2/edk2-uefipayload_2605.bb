@@ -125,7 +125,8 @@ COMPATIBLE_MACHINE = "nuc5i7ryh"
 # nasm: MdePkg/CryptoPkg X64 assembly. acpica: iasl for any .asl in the DXE
 # set. util-linux: libuuid headers for BaseTools. coreboot's edk2 "checktools"
 # target requires the same three, plus imagemagick -- see HOSTTOOLS below.
-DEPENDS = "nasm-native acpica-native util-linux-native"
+# openssl-native: generating/converting the capsule signing keypair below.
+DEPENDS = "nasm-native acpica-native util-linux-native openssl-native"
 
 # The bootsplash conversion runs ImageMagick's `convert` on the build host,
 # exactly as coreboot's edk2 'logo' target does. There is no imagemagick-native
@@ -228,6 +229,14 @@ EDK2_PACKAGES_PATH = "${S}:${EDK2_PLATFORMS_PATH}/Platform/Intel:${EDK2_PLATFORM
 # ME PTT fTPM via the board port's ACPI TPM2 table, which is how it worked
 # anyway -- edk2's TCG stack only probes 0xfed40000 and this CRB is at the
 # non-standard 0xfed70000.
+#
+# NUC_CAPSULE_GUID must be identical in FOUR places: coreboot's
+# CONFIG_DRIVERS_EFI_MAIN_FW_GUID (payload-edk2.config), the -D
+# CAPSULE_MAIN_FW_GUID below, the capsule coreboot_git.bb generates, and the
+# ESRT entry those two Kconfigs produce. coreboot_git.bb defines the same
+# default for the capsule-generation side; a mismatch there means a capsule
+# that silently matches no FMP at runtime.
+NUC_CAPSULE_GUID ??= "d25f89e1-94ec-4533-80b9-7f8855ce0a94"
 EDK2_BUILD_FLAGS = " \
     -D BOOTLOADER=COREBOOT \
     -D BUILD_ARCH=X64 \
@@ -239,7 +248,7 @@ EDK2_BUILD_FLAGS = " \
     -D USE_CBMEM_FOR_CONSOLE=TRUE \
     -D VARIABLE_SUPPORT=SMMSTORE \
     -D CAPSULE_SUPPORT=TRUE \
-    -D CAPSULE_MAIN_FW_GUID=d25f89e1-94ec-4533-80b9-7f8855ce0a94 \
+    -D CAPSULE_MAIN_FW_GUID=${NUC_CAPSULE_GUID} \
     -D SECURE_BOOT_ENABLE=TRUE \
     -D SD_MMC_TIMEOUT=10000 \
     -D PS2_KEYBOARD_ENABLE=TRUE \
@@ -292,6 +301,125 @@ python () {
                  "block is nested inside the one REDFISH_ENABLE gates")
 }
 
+# --- capsule signing identity ------------------------------------------
+# UefiPayloadPkg.dsc's FmpDxe component embeds
+# PcdFmpDevicePkcs7CertBufferXdr from BaseTools/Source/Python/Pkcs7Sign/
+# TestRoot.cer by default -- EDK2's own published test certificate chain.
+# Its private keys ship in the same tree, so ANY capsule signed against it
+# validates on every board that ever built this payload. do_configure below
+# always replaces that PCD with a real certificate before compiling: either
+# an operator-supplied identity (NUC_CAPSULE_CERT/NUC_CAPSULE_KEY) or a
+# generated keypair, and refuses to build at all if either variable somehow
+# still resolves into the Pkcs7Sign/Test tree.
+#
+# coreboot_git.bb's do_deploy signs the actual capsule against this same
+# identity once the finished ROM exists (which it does not, here -- this
+# recipe only produces one of the ROM's inputs). Both recipes default
+# NUC_CAPSULE_KEYDIR identically, so a from-scratch build needs nothing
+# threaded between them: whichever runs do_configure first generates the
+# keypair, and the other one just finds it already there.
+NUC_CAPSULE_KEYDIR ??= "${TOPDIR}/nuc-capsule-keys"
+NUC_CAPSULE_CERT ??= ""
+NUC_CAPSULE_KEY ??= ""
+NUC_CAPSULE_SUBJECT ??= "/CN=pi-bmc NUC5i7RYH UEFI capsule signing/"
+NUC_CAPSULE_CERT_DAYS ??= "7300"
+
+# Shell locals go unbraced throughout these functions, matching the rpi5
+# platform's rpi5_fmp_resolve_keys/rpi5_fmp_generate_keys (see
+# rpi5-uefi-firmware.bb): bitbake expands ${...} against its own datastore
+# before /bin/sh ever sees it, so a braced shell variable is one name
+# collision away from being replaced with something else entirely.
+nuc_capsule_reject_test_cert() {
+    label="$1"; path="$2"
+    resolved=$(readlink -f "$path" 2>/dev/null || echo "$path")
+    case "$resolved" in
+        */Pkcs7Sign/Test*)
+            bbfatal "$label '$path' resolves to '$resolved' -- EDK2's own published test certificate chain (BaseTools/Source/Python/Pkcs7Sign). Its private keys ship in every edk2 checkout, so a capsule signed against it validates on any board running this firmware. Configure NUC_CAPSULE_CERT/NUC_CAPSULE_KEY with a real identity, or leave both unset to use the keypair generated under NUC_CAPSULE_KEYDIR."
+            ;;
+    esac
+}
+
+# Deliberately all-or-nothing: a directory holding some of the four files is
+# an error rather than something to top up -- the four are one identity, and
+# quietly re-deriving a missing piece is how the certificate baked into the
+# firmware ends up not matching the key that signs capsules for it.
+nuc_capsule_generate_keys() {
+    fmp_keydir="${NUC_CAPSULE_KEYDIR}"
+
+    fmp_present=""
+    fmp_missing=""
+    for f in capsule.key capsule.crt capsule.cer capsule.pem; do
+        if [ -e "$fmp_keydir/$f" ]; then
+            fmp_present="$fmp_present $f"
+        else
+            fmp_missing="$fmp_missing $f"
+        fi
+    done
+
+    if [ -z "$fmp_missing" ]; then
+        return 0
+    fi
+
+    if [ -n "$fmp_present" ]; then
+        bbfatal "$fmp_keydir is a partial capsule signing key directory (has:$fmp_present, missing:$fmp_missing). Refusing to regenerate: the certificate and the key that signs capsules for it must stay one pair, and boards already carrying this certificate would reject capsules signed by a new one. Restore the missing files, or move the directory aside to start a new identity -- and reflash every board that has the old one."
+    fi
+
+    mkdir -p "$fmp_keydir"
+
+    # umask, not a later chmod: the private key must never exist, even for
+    # an instant, at a mode another user on the build host could read.
+    (umask 077 && openssl req -x509 -newkey rsa:2048 -nodes -sha256 \
+        -days ${NUC_CAPSULE_CERT_DAYS} -subj "${NUC_CAPSULE_SUBJECT}" \
+        -keyout "$fmp_keydir/capsule.key" -out "$fmp_keydir/capsule.crt") \
+        || bbfatal "could not generate a capsule signing keypair in $fmp_keydir"
+
+    openssl x509 -in "$fmp_keydir/capsule.crt" -outform DER \
+        -out "$fmp_keydir/capsule.cer" \
+        || bbfatal "could not convert $fmp_keydir/capsule.crt to DER"
+    (umask 077 && cat "$fmp_keydir/capsule.key" "$fmp_keydir/capsule.crt" \
+        > "$fmp_keydir/capsule.pem") \
+        || bbfatal "could not write $fmp_keydir/capsule.pem"
+    chmod 0644 "$fmp_keydir/capsule.crt" "$fmp_keydir/capsule.cer"
+
+    bbwarn "Generated a self-signed capsule signing keypair in $fmp_keydir. This is now the identity every board flashed with this firmware will trust for updates, and it is stored unencrypted in the build directory: back it up, and replace it with managed key material (NUC_CAPSULE_CERT + NUC_CAPSULE_KEY) before shipping. Losing it means no board flashed with this firmware can ever be capsule-updated again."
+}
+
+# Resolve the capsule certificate (and, where available, its signer) into
+# $fmp_cert / $fmp_signer for the caller, generating a keypair if neither
+# NUC_CAPSULE_CERT nor NUC_CAPSULE_KEY was configured, and refusing to
+# proceed if the resolved identity is EDK2's own test certificate chain --
+# it always yields a real certificate, or it stops the build.
+nuc_capsule_resolve_keys() {
+    fmp_cert="${NUC_CAPSULE_CERT}"
+    fmp_signer="${NUC_CAPSULE_KEY}"
+
+    if [ -z "$fmp_cert" ] && [ -z "$fmp_signer" ]; then
+        nuc_capsule_generate_keys
+        fmp_cert="${NUC_CAPSULE_KEYDIR}/capsule.cer"
+        fmp_signer="${NUC_CAPSULE_KEYDIR}/capsule.pem"
+    fi
+
+    if [ -n "$fmp_signer" ] && [ ! -r "$fmp_signer" ]; then
+        bbfatal "NUC_CAPSULE_KEY '$fmp_signer' is not readable."
+    fi
+
+    if [ -z "$fmp_cert" ]; then
+        mkdir -p "${B}"
+        fmp_cert="${B}/nuc-capsule-cert.der"
+        openssl x509 -in "$fmp_signer" -outform DER -out "$fmp_cert" \
+            || bbfatal "NUC_CAPSULE_KEY '$fmp_signer' holds no certificate. GenerateCapsule signs by running openssl smime -sign -signer <file> and passes no -inkey, so this file must contain the signing certificate as well as the private key -- concatenate them, key first."
+    fi
+
+    if [ ! -r "$fmp_cert" ]; then
+        bbfatal "NUC_CAPSULE_CERT '$fmp_cert' is not readable."
+    fi
+
+    nuc_capsule_reject_test_cert "NUC_CAPSULE_CERT" "$fmp_cert"
+    if [ -n "$fmp_signer" ]; then
+        nuc_capsule_reject_test_cert "NUC_CAPSULE_KEY" "$fmp_signer"
+    fi
+}
+
 do_configure() {
     # --- stage NucRedfishPkg -------------------------------------------------
     # The whole point of building the payload in its own recipe: these are
@@ -342,6 +470,43 @@ do_configure() {
         install -m 0644 ${DEPLOY_DIR_IMAGE}/ipxe-intel.efidrv \
             ${S}/UefiPayloadPkg/NetworkDrivers/ipxe-intel.efidrv
     fi
+
+    # --- capsule signing certificate ------------------------------------
+    # nuc_capsule_resolve_keys always yields a real certificate (generating
+    # one under NUC_CAPSULE_KEYDIR if the operator configured neither
+    # NUC_CAPSULE_CERT nor NUC_CAPSULE_KEY) or stops the build -- see the
+    # block comment above do_configure. BinToPcd renders it as the
+    # XDR-encoded PCD FmpDevicePkg expects; --pcd cannot do this, it is a
+    # multi-hundred-byte binary blob.
+    nuc_capsule_resolve_keys
+
+    cert_pcd="${B}/nuc-fmp-cert.pcd"
+    python3 "${S}/BaseTools/Scripts/BinToPcd.py" \
+        -i "$fmp_cert" -x -o "${cert_pcd}" \
+        -p gFmpDevicePkgTokenSpaceGuid.PcdFmpDevicePkcs7CertBufferXdr
+
+    # Replace the module-scoped !include inside FmpDxe's <PcdsFixedAtBuild>
+    # block (UefiPayloadPkg.dsc) in place, rather than appending a
+    # platform-wide override at end of file: a module-scoped PCD override
+    # wins over a platform [PcdsFixedAtBuild.common] one, so appending would
+    # silently leave the test certificate in effect. sed's insert-then-
+    # delete keeps the replacement inside the same component block. The
+    # grep guard makes this idempotent across repeated do_configure runs --
+    # ${S} persists across builds, and running it twice must not fail
+    # trying to match a line that is no longer there.
+    dsc="${S}/UefiPayloadPkg/UefiPayloadPkg.dsc"
+    test_include='!include BaseTools/Source/Python/Pkcs7Sign/TestRoot.cer.gFmpDevicePkgTokenSpaceGuid.PcdFmpDevicePkcs7CertBufferXdr.inc'
+    if grep -qF "$test_include" "$dsc"; then
+        sed -i "\\|$test_include|r ${cert_pcd}" "$dsc"
+        sed -i "\\|$test_include|d" "$dsc"
+    fi
+
+    # Belt and braces, because the failure above is invisible from the
+    # board: the assignment must be in the DSC and must carry bytes, or
+    # FmpDxe has no key to authenticate against and no capsule can ever be
+    # applied.
+    grep -q 'PcdFmpDevicePkcs7CertBufferXdr|{0x' "$dsc" || \
+        bbfatal "the capsule signing certificate did not reach $dsc"
 }
 
 do_compile() {
@@ -384,6 +549,28 @@ do_deploy() {
     install -m 0644 ${S}/Build/UefiPayloadPkgX64/RELEASE_GCC/FV/UEFIPAYLOAD.fd \
         ${DEPLOYDIR}/UEFIPAYLOAD.fd
     install -m 0644 ${B}/UEFIPAYLOAD.report.txt ${DEPLOYDIR}/UEFIPAYLOAD.report.txt
+
+    # --- capsule tooling, for coreboot_git.bb's do_deploy -----------------
+    # AppendRmapManifest.py and GenerateCapsule.py run against the FINISHED
+    # ROM, which does not exist here -- this recipe only produces one of its
+    # inputs (UEFIPAYLOAD.fd). coreboot_git.bb's do_deploy is where
+    # coreboot.rom is actually assembled, so that is where the capsule gets
+    # built; it needs these tools to do it.
+    #
+    # GenerateCapsule.py is not self-contained: it imports sibling packages
+    # under BaseTools/Source/Python (Common.Uefi.Capsule.*, Common.Edk2.
+    # Capsule.*), so the whole tree travels, not just the one script.
+    # Carried through DEPLOYDIR -- the only cross-recipe sharing convention
+    # this layer uses (see nuc-coreboot-rom.bb) -- rather than coreboot_git.bb
+    # reaching into this recipe's private WORKDIR, which is not guaranteed
+    # to still exist by the time coreboot's do_deploy runs (e.g. under
+    # rm_work) and which no other recipe in this layer does.
+    install -d ${DEPLOYDIR}/edk2-capsule-tools
+    rm -rf ${DEPLOYDIR}/edk2-capsule-tools/BaseTools-Source-Python
+    cp -a ${S}/BaseTools/Source/Python \
+        ${DEPLOYDIR}/edk2-capsule-tools/BaseTools-Source-Python
+    install -m 0755 ${S}/UefiPayloadPkg/Tools/AppendRmapManifest.py \
+        ${DEPLOYDIR}/edk2-capsule-tools/AppendRmapManifest.py
 }
 
 addtask deploy after do_compile

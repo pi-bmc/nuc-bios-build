@@ -304,8 +304,8 @@ kas shell -c 'bitbake edk2 edk2-platforms'
 Expected: both succeed. Then:
 
 ```bash
-ls build/tmp/sysroots-components/allarch/edk2/usr/share/edk2/edk2/UefiPayloadPkg/UefiPayloadPkg.dsc
-ls build/tmp/sysroots-components/allarch/edk2-platforms/usr/share/edk2/edk2-platforms/Features/Intel
+ls build/tmp/sysroots-components/all/edk2/usr/share/edk2/edk2/UefiPayloadPkg/UefiPayloadPkg.dsc
+ls build/tmp/sysroots-components/all/edk2-platforms/usr/share/edk2/edk2-platforms/Features/Intel
 ```
 
 Expected: both paths exist.
@@ -313,7 +313,7 @@ Expected: both paths exist.
 - [ ] **Step 5: Verify the submodule prune actually ran**
 
 ```bash
-root=build/tmp/sysroots-components/allarch/edk2/usr/share/edk2/edk2
+root=build/tmp/sysroots-components/all/edk2/usr/share/edk2/edk2
 du -sh "$root"
 test ! -d "$root/SecurityPkg/DeviceSecurity/SpdmLib/libspdm/os_stub/openssllib/openssl" \
   && echo "PRUNE OK: nested libspdm openssl gone"
@@ -462,7 +462,7 @@ do_install() {
 ```bash
 cd /home/appkins/src/pi-bmc/nuc-bios-build
 kas shell -c 'bitbake edk2-redfish-client'
-grep -rl 'RedfishClientPkg' build/tmp/sysroots-components/allarch/edk2-redfish-client/usr/share/edk2/edk2-redfish-client/RedfishClientPkg/RedfishClientPkg.dec
+grep -rl 'RedfishClientPkg' build/tmp/sysroots-components/all/edk2-redfish-client/usr/share/edk2/edk2-redfish-client/RedfishClientPkg/RedfishClientPkg.dec
 ```
 
 Expected: build succeeds and the `.dec` path exists. A quilt failure here means the `git mv` disturbed the patch.
@@ -603,7 +603,7 @@ If the count is not 26, stop and inspect — the recipe drifted from what this p
 grep -n '\${S}' edk2-uefipayload_2605.bb
 ```
 
-Expected: exactly two hits, both above `do_configure() {` — the `S = "${UNPACKDIR}"` assignment and the `do_patch defaults to ${S}` remark in the SRC_URI comment. **No** hit may appear on or below the `do_configure() {` line. If one does, fix it by hand.
+Expected: **zero** hits (`grep` exits 1). Nothing below `do_configure() {` may reference `${S}`, and as executed nothing above it does either — the `do_patch defaults to ${S}` remark was rewritten out of the SRC_URI comment along with the patches it described, and `S = "${UNPACKDIR}"` is an assignment, not a reference, so `grep '\${S}'` does not match it. Any hit at all means the rewrite was incomplete; fix it by hand.
 
 - [ ] **Step 9: Point `WORKSPACE` and the Build output at the copy**
 
@@ -1094,19 +1094,26 @@ The refactor moved the files both guards read. A guard that silently stopped
 checking would be invisible until a capsule matched no FMP on hardware, so
 prove each one still fails the build when the GUID disagrees.
 
-`bitbake`'s `-R/--postread` takes a file, so write the override to one:
+`bitbake`'s `-R/--postread` takes a file, so write the override to one. Scope
+each override to the recipe under test: an unscoped `NUC_CAPSULE_GUID` perturbs
+both recipes at once, and since coreboot `DEPENDS` on `edk2-uefipayload`, the
+payload's guard fires first and coreboot's `do_configure` never runs — the
+coreboot probe would then prove nothing about coreboot's guard.
 
 ```bash
 cd /home/appkins/src/pi-bmc/nuc-bios-build
-echo 'NUC_CAPSULE_GUID = "00000000-0000-0000-0000-000000000000"' > build/guid-probe.conf
-kas shell -c 'bitbake -R build/guid-probe.conf -c configure -f edk2-uefipayload' 2>&1 | tail -20
+echo 'NUC_CAPSULE_GUID:pn-edk2-uefipayload = "00000000-0000-0000-0000-000000000000"' > build/guid-probe-payload.conf
+kas shell -c 'bitbake -R build/guid-probe-payload.conf -c configure -f edk2-uefipayload' 2>&1 | tail -20
 ```
 
 Expected: FAIL with `NUC_CAPSULE_GUID drift:` naming `NucCapsuleOnDiskLib.c`,
-`NucRedfishInventory.c` and `UefiPayloadPkg.fdf`. Then the coreboot side:
+`NucRedfishInventory.c` and `UefiPayloadPkg.fdf`. Then the coreboot side, with
+the payload left alone so it configures cleanly and coreboot's own guard is
+what runs:
 
 ```bash
-kas shell -c 'bitbake -R build/guid-probe.conf -c configure -f coreboot' 2>&1 | tail -20
+echo 'NUC_CAPSULE_GUID:pn-coreboot = "00000000-0000-0000-0000-000000000000"' > build/guid-probe-coreboot.conf
+kas shell -c 'bitbake -R build/guid-probe-coreboot.conf -c configure -f coreboot' 2>&1 | tail -20
 ```
 
 Expected: FAIL naming `payload-edk2.config` or the payload FV.
@@ -1114,7 +1121,7 @@ Expected: FAIL naming `payload-edk2.config` or the payload FV.
 Restore both to a clean state before continuing:
 
 ```bash
-rm -f build/guid-probe.conf
+rm -f build/guid-probe-payload.conf build/guid-probe-coreboot.conf
 kas shell -c 'bitbake -c configure -f edk2-uefipayload coreboot'
 ```
 

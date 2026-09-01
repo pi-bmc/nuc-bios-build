@@ -96,6 +96,24 @@ openssl's `cloudflare-quiche` (162 MB), `pyca-cryptography` (82 MB),
 `fuzz/corpora` (82 MB), and eight more. No `.inf`, `.dsc`, `.dec`, `.fdf` or
 `.inc` in edk2 references a file inside any of them.
 
+**Cost the split adds.** The prune is only half the accounting. What survives
+it still has to travel: the three trees become sysroot components, so ~910 MB
+of source that previously existed only in one recipe's `WORKDIR` now lives in
+`sysroots-components/` and in sstate. Measured after the split:
+
+| Component | `sysroots-components/all/` |
+|---|---|
+| `edk2` | 497 MB |
+| `edk2-redfish-client` | 368 MB |
+| `edk2-platforms` | 44 MB |
+
+The edk2 `do_populate_sysroot` sstate object is 141 MB compressed. That is
+inherent to the pattern — a source-only recipe pays for its output in sstate —
+and it is the price of the rebuild locality `## Verified` measures. It is
+material for a CI sstate cache pushed to a remote mirror, and worth stating
+next to the 1.6 GB the prune saves rather than leaving only the saving on the
+page.
+
 **Other divergences from the pattern:**
 
 - `PACKAGE_ARCH` is `corei7-64` on a recipe that compiles only host binaries.
@@ -292,9 +310,13 @@ removed ISO flow, and the two stale prose references to it in
 1. `bitbake -e edk2-uefipayload | grep ^EDK2_PATH=` and the sysroot paths
    resolve as designed.
 2. `kas build` from clean sstate produces a `coreboot-nuc5i7ryh.rom` and
-   `nuc-firmware.cap` byte-comparable to the pre-refactor build for the same
-   `SRCREV`s and flags. Byte-identical is not required (build paths change);
-   the FMP GUID, the RMAP manifest region list, and the ESRT entry must match.
+   `nuc-firmware.cap` for the same `SRCREV`s and flags. Comparing sizes proves
+   nothing — the FDF fixes the payload FV at 12 MiB and the FMAP fixes the ROM,
+   so both match whatever the build put inside them. Byte-identity is not
+   expected either (build paths change). What must match is the FMP GUID, the
+   RMAP manifest region list, and the ESRT entry; `## Verified` below records
+   the property actually established, which is the per-recipe rebuild blast
+   radius rather than an artefact comparison.
 3. Touch `files/0100-*.patch`; confirm `edk2:do_unpack` is a sstate hit while
    the payload rebuilds.
 4. Touch a `NucRedfishPkg` source; confirm all three tree recipes are sstate

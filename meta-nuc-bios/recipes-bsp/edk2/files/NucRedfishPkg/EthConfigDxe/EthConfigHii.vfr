@@ -1,0 +1,96 @@
+/** @file
+ *
+ *  BMC-managed IPv4 formset for the onboard NIC, bound to the EthCfg
+ *  variable (efivarstore - the browser and the Redfish EthernetInterface
+ *  pipeline read and write the variable directly, no callbacks).
+ *  EthConfigDxe applies the variable to Ip4Config2 when the NIC's
+ *  network stack comes up, so every writable question is RESET_REQUIRED.
+ *
+ *  The question set mirrors the standard EthernetInterface schema:
+ *  DHCPv4/DHCPEnabled as the policy switch, one IPv4StaticAddresses
+ *  entry, two StaticNameServers, and the report-only MACAddress.
+ *
+ *  SPDX-License-Identifier: BSD-2-Clause-Patent
+ *
+ **/
+
+#include <Guid/HiiPlatformSetupFormset.h>
+#include <Guid/NucEthConfig.h>
+
+#define EFI_VARIABLE_NON_VOLATILE       0x00000001
+#define EFI_VARIABLE_BOOTSERVICE_ACCESS 0x00000002
+#define EFI_VARIABLE_RUNTIME_ACCESS     0x00000004
+
+formset
+    guid      = NUC_ETH_CONFIG_FORMSET_GUID,
+    title     = STRING_TOKEN(STR_FORM_SET_TITLE),
+    help      = STRING_TOKEN(STR_FORM_SET_TITLE_HELP),
+    classguid = EFI_HII_PLATFORM_SETUP_FORMSET_GUID,
+
+    efivarstore NUC_ETH_CONFIG,
+      attribute = EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS | EFI_VARIABLE_NON_VOLATILE,
+      name  = EthCfg,
+      guid  = NUC_ETH_CONFIG_FORMSET_GUID;
+
+    form formid = 1,
+        title = STRING_TOKEN(STR_FORM_TITLE);
+
+        string varid = EthCfg.MacAddress,
+            prompt  = STRING_TOKEN(STR_ETH_MAC_PROMPT),
+            help    = STRING_TOKEN(STR_ETH_MAC_HELP),
+            flags   = READ_ONLY,
+            minsize = 0,
+            maxsize = 17,
+        endstring;
+
+        checkbox varid = EthCfg.DhcpEnabled,
+            prompt = STRING_TOKEN(STR_ETH_DHCP_PROMPT),
+            help   = STRING_TOKEN(STR_ETH_DHCP_HELP),
+            flags  = CHECKBOX_DEFAULT | RESET_REQUIRED,
+        endcheckbox;
+
+        suppressif ideqval EthCfg.DhcpEnabled == 1;
+            string varid = EthCfg.Ip4Address,
+                prompt  = STRING_TOKEN(STR_ETH_IP4_ADDRESS_PROMPT),
+                help    = STRING_TOKEN(STR_ETH_IP4_REQUIRED_HELP),
+                flags   = RESET_REQUIRED,
+                minsize = 0,
+                maxsize = 15,
+            endstring;
+
+            string varid = EthCfg.Ip4SubnetMask,
+                prompt  = STRING_TOKEN(STR_ETH_IP4_SUBNET_MASK_PROMPT),
+                help    = STRING_TOKEN(STR_ETH_IP4_REQUIRED_HELP),
+                flags   = RESET_REQUIRED,
+                minsize = 0,
+                maxsize = 15,
+            endstring;
+
+            string varid = EthCfg.Ip4Gateway,
+                prompt  = STRING_TOKEN(STR_ETH_IP4_GATEWAY_PROMPT),
+                help    = STRING_TOKEN(STR_ETH_IP4_OPTIONAL_HELP),
+                flags   = RESET_REQUIRED,
+                minsize = 0,
+                maxsize = 15,
+            endstring;
+        endif;
+
+        string varid = EthCfg.Ip4Dns1,
+            prompt  = STRING_TOKEN(STR_ETH_IP4_DNS1_PROMPT),
+            help    = STRING_TOKEN(STR_ETH_IP4_OPTIONAL_HELP),
+            flags   = RESET_REQUIRED,
+            minsize = 0,
+            maxsize = 15,
+        endstring;
+
+        string varid = EthCfg.Ip4Dns2,
+            prompt  = STRING_TOKEN(STR_ETH_IP4_DNS2_PROMPT),
+            help    = STRING_TOKEN(STR_ETH_IP4_OPTIONAL_HELP),
+            flags   = RESET_REQUIRED,
+            minsize = 0,
+            maxsize = 15,
+        endstring;
+
+    endform;
+
+endformset;

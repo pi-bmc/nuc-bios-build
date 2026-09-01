@@ -1,0 +1,39 @@
+/** @file
+ *
+ *  x-UEFI-redfish configure-language map for the BMC-managed IPv4
+ *  formset - the EthernetInterface schema namespace, NOT Bios
+ *  attributes: these questions back the standard
+ *  /redfish/v1/Systems/1/EthernetInterfaces/{id} resource served by
+ *  RedfishEthernetInterfaceDxe, so any Redfish-conformant client (the
+ *  BMC included) manages the NIC without vendor-specific knowledge.
+ *
+ *  Path grammar (RedfishClientPkg Readme): rooted at the schema
+ *  resource, not the service root; {N} is a collection member instance,
+ *  [N] a JSON-array element. The feature driver constructs these exact
+ *  strings (EthernetInterfaceCommon.c ETH_LANG_*) and
+ *  RedfishPlatformConfigDxe matches them byte-for-byte - keep the two
+ *  in step, and keep the language version below identical to the
+ *  feature driver RESOURCE_SCHEMA_FULL. (Do not name UNI directives in
+ *  this comment: the parser keys on them anywhere in a line, and an
+ *  apostrophe on such a line reads as an unclosed quote.)
+ *
+ *  Storage stays the EthCfg efivarstore: HiiUtilityLib reads and writes
+ *  EFI_HII_VARSTORE_EFI_VARIABLE questions with gRT->Get/SetVariable
+ *  directly, so a consumed BMC edit lands in the same variable
+ *  EthConfigDxe applies to Ip4Config2 on the next boot (every writable
+ *  question is RESET_REQUIRED).
+ *
+ *  SPDX-License-Identifier: BSD-2-Clause-Patent
+ *
+ **/
+
+/=#
+#langdef   x-UEFI-redfish-EthernetInterface.v1_8_0 "EthernetInterface.v1_8_0"
+
+#string STR_ETH_MAC_PROMPT              #language x-UEFI-redfish-EthernetInterface.v1_8_0   "/EthernetInterfaces/{1}/MACAddress"
+#string STR_ETH_DHCP_PROMPT             #language x-UEFI-redfish-EthernetInterface.v1_8_0   "/EthernetInterfaces/{1}/DHCPv4/DHCPEnabled"
+#string STR_ETH_IP4_ADDRESS_PROMPT      #language x-UEFI-redfish-EthernetInterface.v1_8_0   "/EthernetInterfaces/{1}/IPv4StaticAddresses/[1]/Address"
+#string STR_ETH_IP4_SUBNET_MASK_PROMPT  #language x-UEFI-redfish-EthernetInterface.v1_8_0   "/EthernetInterfaces/{1}/IPv4StaticAddresses/[1]/SubnetMask"
+#string STR_ETH_IP4_GATEWAY_PROMPT      #language x-UEFI-redfish-EthernetInterface.v1_8_0   "/EthernetInterfaces/{1}/IPv4StaticAddresses/[1]/Gateway"
+#string STR_ETH_IP4_DNS1_PROMPT         #language x-UEFI-redfish-EthernetInterface.v1_8_0   "/EthernetInterfaces/{1}/StaticNameServers/[1]"
+#string STR_ETH_IP4_DNS2_PROMPT         #language x-UEFI-redfish-EthernetInterface.v1_8_0   "/EthernetInterfaces/{1}/StaticNameServers/[2]"

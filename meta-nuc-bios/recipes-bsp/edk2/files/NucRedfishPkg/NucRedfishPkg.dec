@@ -14,11 +14,21 @@
   PACKAGE_GUID      = 8e9d1a20-3b6c-4f52-9a7e-1c0f2d3e4b50
   PACKAGE_VERSION   = 1.0
 
+[Includes]
+  Include
+
 [Guids]
   #
   # Token space GUID for this package's PCDs.
   #
   gNucRedfishPkgTokenSpaceGuid = { 0x9f2c4d18, 0x6a3b, 0x4e7d, { 0xb1, 0x2c, 0x5d, 0x8e, 0x0f, 0x3a, 0x6b, 0x71 } }
+
+  #
+  # Vendor GUID of the EthCfg variable AND the EthConfigDxe formset (one GUID
+  # for both, the ConfigDxe idiom). Ported from the RPi5's BMC-managed IPv4
+  # page; see Include/Guid/NucEthConfig.h.
+  #
+  gNucEthConfigFormSetGuid = { 0x967e2001, 0x25c5, 0x4d1e, { 0xbf, 0x24, 0xb4, 0x22, 0xd8, 0x81, 0xa1, 0xa9 } }
 
 [PcdsFixedAtBuild]
   #
@@ -34,3 +44,13 @@
   # Confirmed on hardware 2026-07-29: the NUC enumerates it as enxdaa762233ef5.
   #
   gNucRedfishPkgTokenSpaceGuid.PcdNucRedfishEcmMac|{0xDA, 0xA7, 0x62, 0x23, 0x3E, 0xF5}|VOID*|0x00000001
+
+  #
+  # HTTP Basic credentials for the BMC's Redfish service. Empty user means the
+  # service is unauthenticated and the credential lib reports AuthMethodNone
+  # (the JetKVM's RHI-subnet trust model). A nanokvm-app BMC puts /redfish/v1
+  # behind CheckAuth unless authentication is disabled; set both PCDs at build
+  # time to speak HTTP Basic, exactly like the RPi5's RpiRedfishCredentialLib.
+  #
+  gNucRedfishPkgTokenSpaceGuid.PcdNucRedfishUser|""|VOID*|0x00000002
+  gNucRedfishPkgTokenSpaceGuid.PcdNucRedfishPassword|""|VOID*|0x00000003

@@ -42,6 +42,7 @@
 #define NUC_REDFISH_SERVICE_ROOT_URI  L"/redfish/v1/"
 #define NUC_REDFISH_SYSTEM_URI        L"/redfish/v1/Systems/1"
 #define NUC_REDFISH_MEMORY_URI        L"/redfish/v1/Systems/1/Memory"
+#define NUC_REDFISH_PROCESSORS_URI    L"/redfish/v1/Systems/1/Processors"
 #define NUC_REDFISH_DRIVES_URI        L"/redfish/v1/Systems/1/Storage/1/Drives"
 
 //
@@ -194,6 +195,74 @@ EFI_STATUS
 NucRedfishBuildMemoryPost (
   IN  NUC_REDFISH_MEMORY_MODULE  *Module,
   OUT CHAR8                      **Json
+  );
+
+//
+// Processor sockets reported. The NUC5i7RYH is single-socket; the bound
+// leaves headroom and keeps a malformed table from overrunning.
+//
+#define NUC_REDFISH_PROCESSOR_MAX  4
+
+//
+// One populated processor socket, as SMBIOS type 4 describes it, reduced to
+// the Redfish Processor v1_14_0 properties the BMC stores. Same member
+// contract as the RPi5 implementation this is ported from: Socket doubles as
+// the member identity, and the POST never carries the operator-managed
+// SpeedLimitMHz/SpeedLocked pair (this platform has no clock knob to back
+// them; the BMC preserves whatever an operator staged across the re-POST).
+//
+typedef struct {
+  CHAR8          Socket[NUC_REDFISH_STR_MAX];
+  CHAR8          Manufacturer[NUC_REDFISH_STR_MAX];
+  CHAR8          Model[NUC_REDFISH_STR_MAX];
+  CHAR8          SerialNumber[NUC_REDFISH_STR_MAX];
+  CHAR8          PartNumber[NUC_REDFISH_STR_MAX];
+  CHAR8          IdRegisters[19];                  // "0x" + 16 hex digits + NUL
+  CONST CHAR8    *ProcessorType;                   // "CPU", "GPU", ... or NULL
+  UINT32         MaxSpeedMhz;
+  UINT32         OperatingSpeedMhz;                // current, not rated
+  UINT32         TotalCores;
+  UINT32         TotalEnabledCores;
+  UINT32         TotalThreads;
+  BOOLEAN        Enabled;                          // type 4 CPU Status says enabled
+} NUC_REDFISH_PROCESSOR;
+
+/**
+  Collect populated processor sockets from the SMBIOS type 4 records coreboot
+  published.
+
+  Unpopulated sockets are skipped on the same reasoning as memory: SMBIOS
+  emits a record per socket whether or not it is filled, and reporting an
+  empty one would claim hardware that is not there.
+
+  @param[out] Processors  Receives the populated sockets.
+  @param[in]  Max         Capacity of Processors.
+  @param[out] Count       Receives the number written.
+
+  @retval EFI_SUCCESS    Zero or more processors were collected.
+  @retval EFI_NOT_FOUND  The SMBIOS protocol is not available.
+**/
+EFI_STATUS
+NucRedfishCollectProcessors (
+  OUT NUC_REDFISH_PROCESSOR  *Processors,
+  IN  UINTN                  Max,
+  OUT UINTN                  *Count
+  );
+
+/**
+  Build the Processor POST body for one socket.
+
+  @param[in]  Processor  Processor to describe.
+  @param[out] Json       Receives an allocated ASCII JSON body. Caller frees
+                         with FreePool().
+
+  @retval EFI_SUCCESS           Body was built.
+  @retval EFI_OUT_OF_RESOURCES  Allocation failed.
+**/
+EFI_STATUS
+NucRedfishBuildProcessorPost (
+  IN  NUC_REDFISH_PROCESSOR  *Processor,
+  OUT CHAR8                  **Json
   );
 
 //

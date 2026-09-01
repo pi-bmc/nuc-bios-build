@@ -350,40 +350,24 @@ FindBootOverrideOption (
 }
 
 /**
-  Act on a matched boot override, in this boot if the call context allows it.
+  Act on a matched boot override: stage BootNext and reset.
 
-  Boots the option directly rather than staging BootNext. BdsEntry caches
-  BootNext before calling any PlatformBootManagerLib API, specifically so that a
-  BootNext set during BDS is not consumed in the same boot:
+  Always the two-step, never EfiBootManagerBoot() from here. The RPi5 port of
+  this driver shipped the same-boot path first and learned the hard way that
+  booting from the config-handler callback use-after-frees in-flight discovery
+  state -- the boot tears the network stack down underneath
+  RedfishDiscoverDxe. One extra reset is the price of a boot that cannot
+  corrupt the stack that requested it; the BMC's override was cleared and
+  acknowledged before this point, so the loop is safe (the next boot finds
+  nothing staged and consumes BootNext normally).
 
-      // Cache the "BootNext" NV variable before calling any PlatformBootManagerLib
-      // APIs. This could avoid the "BootNext" set by PlatformBootManagerLib be
-      // consumed in this boot.
-      -- MdeModulePkg/Universal/BdsDxe/BdsEntry.c
-
-  This driver runs on the far side of that snapshot -- it cannot run until
-  discovery has configured REST EX over a connected controller -- so staging
-  BootNext costs a whole boot, in every flow including power-cycling a host that
-  was off. EfiBootManagerBoot() has no such problem, and the timing is right:
-  measured on hardware, this driver runs during BdsWait, after GraphicsConsoleDxe
-  has started (so the option gets a console) and before BDS selects anything from
-  BootOrder.
-
-  Falling back is automatic. EfiBootManagerBoot() connects the device path and
-  expands short-form paths itself, and on every failure path it records
-  Option->Status and returns rather than resetting -- so if the target will not
-  boot, or is an application that exits, control comes back here and BDS carries
-  on with its normal BootOrder.
-
-  The TPL guard is the one real constraint. StartImage() requires
-  TPL_APPLICATION, and this driver is invoked from RedfishConfigHandlerDriver's
-  service-discovered notification, whose TPL depends on how the discovery event
-  was signalled. Booting above TPL_APPLICATION would be a spec violation, so in
-  that case fall back to staging BootNext -- one boot late, but correct.
+  BdsEntry caches BootNext before PlatformBootManagerLib runs, specifically so
+  a BootNext set during BDS is not consumed in the same boot -- hence the
+  reset rather than a plain return.
 
   @param[in] Option  The matched boot option. Not freed here.
 
-  @retval EFI_SUCCESS  The option was booted, or BootNext was staged.
+  @retval EFI_SUCCESS  BootNext was staged (the reset does not return).
 **/
 STATIC
 EFI_STATUS
@@ -392,37 +376,16 @@ ApplyMatchedOption (
   )
 {
   EFI_STATUS  Status;
-  EFI_TPL     Tpl;
   UINT16      BootNext;
 
   //
-  // No direct "get current TPL" exists; raising to the ceiling and immediately
-  // restoring reports what it was.
+  // Always stage BootNext and reset; never EfiBootManagerBoot() from here.
+  // The RPi5 port of this driver learned that same-boot booting from the
+  // config-handler callback use-after-frees in-flight discovery state (the
+  // boot tears down the network stack under RedfishDiscoverDxe), and in
+  // practice this callback never runs at TPL_APPLICATION anyway (measured
+  // TPL_CALLBACK = 8 on this platform).
   //
-  Tpl = gBS->RaiseTPL (TPL_HIGH_LEVEL);
-  gBS->RestoreTPL (Tpl);
-
-  if (Tpl == TPL_APPLICATION) {
-    DEBUG ((
-      DEBUG_ERROR,
-      "NucRedfishSync: booting Boot%04x now (same boot)\n",
-      Option->OptionNumber
-      ));
-
-    EfiBootManagerBoot (Option);
-
-    //
-    // Only reached if the option failed or was an application that exited.
-    //
-    DEBUG ((
-      DEBUG_ERROR,
-      "NucRedfishSync: Boot%04x returned - %r, falling through to BootOrder\n",
-      Option->OptionNumber,
-      Option->Status
-      ));
-    return EFI_SUCCESS;
-  }
-
   BootNext = Option->OptionNumber;
   Status   = gRT->SetVariable (
                     L"BootNext",
@@ -434,9 +397,7 @@ ApplyMatchedOption (
 
   DEBUG ((
     DEBUG_ERROR,
-    "NucRedfishSync: TPL %d > TPL_APPLICATION, cannot StartImage here; "
-    "staged BootNext=Boot%04x - %r\n",
-    (UINTN)Tpl,
+    "NucRedfishSync: staged BootNext=Boot%04x - %r\n",
     BootNext,
     Status
     ));
@@ -588,6 +549,55 @@ HandleBootOverride (
 
   @param[in] Service  The Redfish service to report to.
 **/
+/**
+  Report the host's processor sockets to the BMC's Processors collection.
+
+  One POST per populated socket, keyed on the SMBIOS socket designation so a
+  later boot updates the existing member rather than accumulating duplicates.
+  The POST never carries SpeedLimitMHz/SpeedLocked: those are operator-managed
+  properties the BMC preserves across the re-POST (the RPi5 shared-member
+  contract), and this platform has no clock knob behind them anyway.
+  Fail-open by design, like every other report here.
+
+  @param[in] Service  The Redfish service to report to.
+**/
+STATIC
+VOID
+ReportProcessors (
+  IN REDFISH_SERVICE  Service
+  )
+{
+  NUC_REDFISH_PROCESSOR  Processors[NUC_REDFISH_PROCESSOR_MAX];
+  REDFISH_RESPONSE       Response;
+  EFI_STATUS             Status;
+  UINTN                  Count;
+  UINTN                  Index;
+  CHAR8                  *Body;
+
+  Status = NucRedfishCollectProcessors (Processors, NUC_REDFISH_PROCESSOR_MAX, &Count);
+  if (EFI_ERROR (Status) || (Count == 0)) {
+    DEBUG ((DEBUG_ERROR, "NucRedfishSync: no processors to report - %r\n", Status));
+    return;
+  }
+
+  for (Index = 0; Index < Count; Index++) {
+    Body   = NULL;
+    Status = NucRedfishBuildProcessorPost (&Processors[Index], &Body);
+    if (EFI_ERROR (Status) || (Body == NULL)) {
+      continue;
+    }
+
+    ZeroMem (&Response, sizeof (Response));
+    Status = RedfishHttpPostResource (Service, NUC_REDFISH_PROCESSORS_URI, Body, &Response);
+    LogResult ("POST", NUC_REDFISH_PROCESSORS_URI, Status, &Response);
+    RedfishHttpFreeResponse (&Response);
+
+    FreePool (Body);
+  }
+
+  DEBUG ((DEBUG_ERROR, "NucRedfishSync: reported %d processor(s)\n", Count));
+}
+
 STATIC
 VOID
 ReportMemory (
@@ -757,6 +767,11 @@ NucRedfishSync (
   // 2b. Report the DIMMs.
   //
   ReportMemory (Service);
+
+  //
+  // 2b2. Report the processor sockets.
+  //
+  ReportProcessors (Service);
 
   //
   // 2c. Report the drives.

@@ -1,13 +1,20 @@
 # NucRedfishPkg — NUC ⇄ BMC Redfish-over-USB glue
 
-EDK2 Redfish host-interface support for the NUC, talking to the JetKVM BMC's
-Redfish service over a USB CDC-ECM link.
+EDK2 Redfish host-interface support for the NUC, talking to the BMC's
+Redfish service over a USB CDC-ECM link. Works against the JetKVM's
+service (AuthMethodNone over the trusted RHI subnet) and against
+nanokvm-app (set the PcdNucRedfishUser/Password PCDs and the credential
+lib speaks HTTP Basic). The RPi5's RpiRedfishPkg began as a port of this
+package; the 2026-08-31 alignment pass ported its evolution back — the
+processor inventory POST, the always-reset boot override, the Basic
+credential lib, the quiesce/boot-enum lifecycle patches (0027/0028) and
+the EthernetInterface feature pair (0029).
 
 **Two ways to load it, and the first is now the real one:**
 
 1. **Built into the payload** (current). `edk2-uefipayload_2605.bb` stages this
    package into the tree and
-   `files/0001-UefiPayloadPkg-wire-in-the-Redfish-host-interface-sta.patch`
+   `files/0020-UefiPayloadPkg-wire-in-the-Redfish-host-interface-st.patch`
    adds it to `UefiPayloadPkg`, so the whole stack ships inside
    `coreboot-nuc5i7ryh.rom`. Nothing to register, nothing to load by hand.
 2. **Standalone `Driver####` drivers on the stock (locked) AMI BIOS** — the
@@ -26,8 +33,11 @@ Verified on hardware 2026-07-30: discovery completed
 (`RedfishServiceDiscoveredCallback: Redfish service 5CC27A14-... is discovered!`)
 and BDS then went straight to the OS loader without a single HTTP request,
 because nothing in the payload produces `EDKII_REDFISH_CONFIG_HANDLER_PROTOCOL`
-— that is edk2-redfish-client's job, and it does not build against this tree
-(see the note above `SRC_URI` in `edk2-uefipayload_2605.bb`).
+— that was edk2-redfish-client's job. The client now builds and ships in the
+payload (patch 0022 onward; the move to upstream edk2 master was for its
+GUIDs), and its feature layer serves BIOS attributes, boot options and the
+EthernetInterface resource; this driver keeps owning what has no HII
+substitute.
 
 `NucRedfishSyncDxe` produces that protocol and performs the exchange:
 
@@ -35,7 +45,10 @@ because nothing in the payload produces `EDKII_REDFISH_CONFIG_HANDLER_PROTOCOL`
 |---|---|---|
 | 1 | `GET /redfish/v1/` | proves the type 42 record, ECM link and REST EX line up |
 | 2 | `PATCH /redfish/v1/Systems/1` | reports SMBIOS identity + `BootProgress` to the BMC |
-| 3 | `GET /redfish/v1/Systems/1` | reads the BMC's one-time boot override, applies it as `BootNext` |
+| 2b | `POST /redfish/v1/Systems/1/Memory` per DIMM | SMBIOS type 17 inventory, keyed on `DeviceLocator` |
+| 2b2 | `POST /redfish/v1/Systems/1/Processors` per socket | SMBIOS type 4 inventory, keyed on `Socket`; never carries the operator-managed `SpeedLimitMHz`/`SpeedLocked` pair |
+| 2c | `POST /redfish/v1/Systems/1/Storage/1/Drives` per drive | DiskInfo/NVMe pass-thru inventory, keyed on `SerialNumber` |
+| 3 | `GET /redfish/v1/Systems/1` | reads the BMC's one-time boot override, acknowledges it, stages `BootNext` and cold-resets |
 
 The BMC has no in-band view of the host, so step 2 is the only way its
 `ComputerSystem` reflects the real machine rather than placeholders. Step 3 is
@@ -119,3 +132,11 @@ Set `PcdRedfishServiceUuid` to all-zero to match any service instead.
   firmware, since its offsets described a variable that no longer exists and
   it produced the same protocol GUID as the driver that actually answers.
 - End-to-end only provable against the live BMC over the ECM link.
+- NIC IPv4 management is the standard resource, not a Bios attribute:
+  `EthConfigDxe` (this package) publishes the `EthCfg` questions under
+  `x-UEFI-redfish-EthernetInterface.v1_8_0` and applies them into
+  `Ip4Config2` at boot; `RedfishEthernetInterfaceDxe` +
+  `RedfishEthernetInterfaceCollectionDxe` serve
+  `/Systems/1/EthernetInterfaces/{id}` from them. The BMC's own USB
+  gadget link is excluded from the page and the apply, so a PATCH can
+  never cut off the host interface.

@@ -1,0 +1,80 @@
+From: appkins <nbatkins@gmail.com>
+Date: Mon, 31 Aug 2026 22:00:00 -0500
+Subject: [PATCH] UefiPayloadPkg: wire in the EthernetInterface feature pair
+
+The standard-resource route for BMC-managed NIC IPv4, ported from the
+RPi5 platform: EthConfigDxe publishes the EthCfg efivarstore questions
+under x-UEFI-redfish-EthernetInterface configure language and applies
+them into Ip4Config2 at boot; RedfishEthernetInterfaceDxe and its
+collection driver serve /redfish/v1/Systems/1/EthernetInterfaces/{id}
+from those questions (upstream edk2-redfish-client has converters for
+the schema but no feature driver). The BMC manages the onboard NIC
+with plain Redfish and no vendor-specific bridge; the BMC's own USB
+gadget link is excluded from both the page and the apply, so a PATCH
+here can never cut off the host interface.
+
+Upstream-Status: Inappropriate [platform policy]
+
+---
+
+diff --git aa/UefiPayloadPkg/UefiPayloadPkg.dsc bb/UefiPayloadPkg/UefiPayloadPkg.dsc
+--- aa/UefiPayloadPkg/UefiPayloadPkg.dsc
++++ bb/UefiPayloadPkg/UefiPayloadPkg.dsc
+@@ -1105,6 +1105,13 @@
+   # RedfishPlatformConfigDxe (above) is what answers for HII.
+   #
+   NucRedfishPkg/NucRedfishSyncDxe/NucRedfishSyncDxe.inf
++  #
++  # BMC-managed IPv4 Setup page for the onboard NIC (EthCfg variable,
++  # applied into Ip4Config2 at boot). Ported from the RPi5; its questions
++  # carry x-UEFI-redfish-EthernetInterface configure language for the
++  # feature driver below.
++  #
++  NucRedfishPkg/EthConfigDxe/EthConfigDxe.inf
+ 
+ #
+ # edk2-redfish-client. Its own RedfishClient.dsc.inc is not used, because it
+@@ -1121,9 +1128,26 @@
+ 
+ [LibraryClasses]
+   !include RedfishClientPkg/RedfishClientLibs.dsc.inc
++  #
++  # Converter libs for the EthernetInterface feature pair below; upstream
++  # ships the converters but maps no lib classes for schemas it has no
++  # feature driver for.
++  #
++  EthernetInterfaceV1_8_0Lib|RedfishClientPkg/ConverterLib/edk2library/EthernetInterface/v1_8_0/Lib.inf
++  EthernetInterfaceCollectionLib|RedfishClientPkg/ConverterLib/edk2library/EthernetInterfaceCollection/Lib.inf
+ 
+ [Components.X64]
+   !include RedfishClientPkg/RedfishClientComponents.dsc.inc
++  #
++  # This platform's own EthernetInterface feature/collection drivers
++  # (ported from the RPi5): upstream has converters for the schema but no
++  # feature driver. They serve /Systems/1/EthernetInterfaces/{id} from
++  # EthConfigDxe's questions.
++  #
++  NucRedfishPkg/RedfishEthernetInterfaceDxe/RedfishEthernetInterfaceDxe.inf
++  NucRedfishPkg/RedfishEthernetInterfaceCollectionDxe/RedfishEthernetInterfaceCollectionDxe.inf
++  RedfishClientPkg/Converter/EthernetInterface/v1_8_0/RedfishEthernetInterface_V1_8_0_Dxe.inf
++  RedfishClientPkg/Converter/EthernetInterfaceCollection/RedfishEthernetInterfaceCollection_Dxe.inf
+ !endif
+ !endif
+ !endif
+diff --git aa/UefiPayloadPkg/UefiPayloadPkg.fdf bb/UefiPayloadPkg/UefiPayloadPkg.fdf
+--- aa/UefiPayloadPkg/UefiPayloadPkg.fdf
++++ bb/UefiPayloadPkg/UefiPayloadPkg.fdf
+@@ -395,8 +395,13 @@ INF MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
+   INF MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/NetworkCommon.inf
+   INF MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcEcm/UsbCdcEcm.inf
+   INF NucRedfishPkg/NucRedfishSyncDxe/NucRedfishSyncDxe.inf
++  INF NucRedfishPkg/EthConfigDxe/EthConfigDxe.inf
+ !if $(REDFISH_CLIENT) == TRUE
+   !include RedfishClientPkg/RedfishClient.fdf.inc
++  INF NucRedfishPkg/RedfishEthernetInterfaceDxe/RedfishEthernetInterfaceDxe.inf
++  INF NucRedfishPkg/RedfishEthernetInterfaceCollectionDxe/RedfishEthernetInterfaceCollectionDxe.inf
++  INF RedfishClientPkg/Converter/EthernetInterface/v1_8_0/RedfishEthernetInterface_V1_8_0_Dxe.inf
++  INF RedfishClientPkg/Converter/EthernetInterfaceCollection/RedfishEthernetInterfaceCollection_Dxe.inf
+ !endif
+ !endif
+ !endif

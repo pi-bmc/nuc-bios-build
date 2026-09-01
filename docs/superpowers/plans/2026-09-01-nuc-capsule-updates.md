@@ -133,7 +133,7 @@ and change the range comment near line 57 from `0019-0033` to `0019-0034`.
 - [ ] **Step 5: Verify it applies in a real build**
 
 ```bash
-kas shell -c 'bitbake -c patch -f edk2-uefipayload'
+kas shell -c 'bitbake -c patch edk2-uefipayload'
 ls build/tmp/work/corei7-64-poky-linux/edk2-uefipayload/2605+git/git/UefiPayloadPkg/Library/FmpDeviceSmmLib/
 ```
 
@@ -219,7 +219,7 @@ CONFIG_DRIVERS_EFI_MAIN_FW_LSV=0x00000001
 - [ ] **Step 2: Verify the options survive into the generated .config**
 
 ```bash
-kas shell -c 'bitbake -c configure -f coreboot'
+kas shell -c 'bitbake -c configure coreboot'
 grep -E "DRIVERS_EFI_(UPDATE_CAPSULES|FW_INFO|MAIN_FW_GUID)" \
   build/tmp/work/*/coreboot/*/build/.config
 ```

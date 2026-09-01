@@ -130,6 +130,16 @@ do_install() {
     # submodule stays, which is what keeps that lib.c. The list is read out of
     # the .gitmodules files rather than written here, so it stays right when
     # upstream adds or drops one.
+    #
+    # The prune's only failure mode is silence: a `sed` that fails inside the
+    # `$(...)` of a `for` word list does not trip `set -e`, so a renamed or
+    # missing .gitmodules yields an empty list, the loop does nothing, and the
+    # 1.6 GB tree stages into every consumer sysroot and into sstate with no
+    # diagnostic. Assert the file and the outcome instead.
+    [ -f "$edk2_root/.gitmodules" ] || \
+        bbfatal "edk2: no .gitmodules at the top of the staged tree -- the nested-submodule prune would silently do nothing and stage ~1.6 GB into every consumer sysroot and into sstate"
+
+    pruned=0
     gitmodule_paths='s/^[[:space:]]*path[[:space:]]*=[[:space:]]*//p'
     for sub in $(sed -n "$gitmodule_paths" "$edk2_root/.gitmodules"); do
         [ -f "$edk2_root/$sub/.gitmodules" ] || continue
@@ -137,8 +147,14 @@ do_install() {
             [ -d "$edk2_root/$sub/$nested" ] || continue
             bbnote "edk2: dropping nested submodule checkout $sub/$nested"
             rm -rf "$edk2_root/$sub/$nested"
+            pruned=$((pruned + 1))
         done
     done
+
+    if [ "$pruned" -eq 0 ]; then
+        bbfatal "edk2: nested-submodule prune removed nothing -- upstream dropped every depth-2 submodule, or the .gitmodules layout changed and the prune stopped matching. Either way ~1.6 GB is about to stage into every consumer sysroot and into sstate; confirm before relaxing this."
+    fi
+    bbnote "edk2: pruned $pruned nested submodule checkouts"
 
     # Build bookkeeping rather than source: quilt's .pc/ backups and the
     # "patches" symlink it points at ${WORKDIR}/patches (which would stage as a

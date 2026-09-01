@@ -207,6 +207,10 @@ do_compile() {
         bbfatal "intel.efidrv did not link intel.o -- it would publish no SNP for the LOM"
 }
 
+# Where the driver lands in the sysroot. edk2-uefipayload_2605.bb reads exactly
+# this path under ${STAGING_DATADIR}, as IPXE_SNP_DRIVER -- keep the two in step.
+IPXE_STAGE_DIR = "${datadir}/ipxe"
+
 # The UNDI/SNP driver is a build INPUT to edk2-uefipayload, so it travels
 # through the sysroot rather than DEPLOY_DIR_IMAGE: a normal DEPENDS then
 # carries both the ordering and the signature, with no do_configure[depends]
@@ -215,9 +219,9 @@ do_compile() {
 # ipxe.rom stays in do_deploy: it is a finished artifact a human collects,
 # not an input to another recipe's build.
 do_install() {
-    install -d ${D}${datadir}/ipxe
+    install -d ${D}${IPXE_STAGE_DIR}
     install -m 0644 ${S}/src/bin-x86_64-efi/intel.efidrv \
-        ${D}${datadir}/ipxe/ipxe-intel.efidrv
+        ${D}${IPXE_STAGE_DIR}/ipxe-intel.efidrv
 }
 
 do_deploy() {

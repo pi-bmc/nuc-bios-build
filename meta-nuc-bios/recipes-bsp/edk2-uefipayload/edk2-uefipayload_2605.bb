@@ -54,7 +54,7 @@ PV = "2605"
 UNPACKDIR ?= "${WORKDIR}"
 
 # There is no source tree to point S at -- the file:// entries above unpack
-# straight into ${WORKDIR}, and the tree that IS built lives in EDK2_PATH.
+# straight into ${UNPACKDIR}, and the tree that IS built lives in EDK2_PATH.
 S = "${UNPACKDIR}"
 B = "${WORKDIR}/build"
 
@@ -76,6 +76,11 @@ EDK2_REDFISH_CLIENT_PATH = "${EDK2_SOURCE_ROOT}/edk2-redfish-client"
 # edits behind.
 EDK2_SRC = "${EDK2_SOURCE_ROOT}/edk2"
 EDK2_PATH = "${WORKDIR}/edk2"
+
+# The UNDI/SNP driver ipxe-efi_git.bb stages for this recipe. Its producer
+# spells the same path as IPXE_STAGE_DIR under ${datadir} -- keep the two in
+# step.
+IPXE_SNP_DRIVER = "${STAGING_DATADIR}/ipxe/ipxe-intel.efidrv"
 
 COMPATIBLE_MACHINE = "nuc5i7ryh"
 
@@ -130,7 +135,7 @@ INHIBIT_DEFAULT_DEPS = "1"
 # Override with any image path (converted at configure time) or set to "" to
 # fall back to the stock TianoCore logo. Size is a non-issue: the mostly-black
 # BMP LZMA-compresses to ~7 KiB when coreboot packs the payload into CBFS.
-EDK2_BOOTSPLASH_FILE ??= "${WORKDIR}/bootsplash.bmp"
+EDK2_BOOTSPLASH_FILE ??= "${UNPACKDIR}/bootsplash.bmp"
 EDK2_GOP_FILE ??= ""
 # EDK2_IPXE builds the iPXE tree and embeds ipxe-intel.efidrv, the UNDI/SNP
 # driver for the onboard NIC. That driver is the reason netboot works at all:
@@ -395,6 +400,15 @@ do_configure() {
     # drops gitsm's recursively-fetched depth-2 submodule checkouts. On a CoW
     # filesystem the copy is metadata only; anywhere else it falls back to a
     # real one.
+    #
+    # EDK2_SOURCE_ROOT is spelled once here and once in each of edk2_git.bb,
+    # edk2-platforms_git.bb and edk2-redfish-client_git.bb -- four
+    # hand-maintained copies of one path with only prose keeping them in step.
+    # If one drifts, the copy below silently produces an empty tree and the
+    # failure surfaces hundreds of lines later inside build.py.
+    [ -d "${EDK2_SRC}" ] || \
+        bbfatal "no staged edk2 tree at ${EDK2_SRC} -- EDK2_SOURCE_ROOT here and the EDK2_SOURCE_ROOT edk2_git.bb installs into have drifted apart"
+
     rm -rf "${EDK2_PATH}"
     mkdir -p "${EDK2_PATH}"
     cp -a --reflink=auto "${EDK2_SRC}/." "${EDK2_PATH}/"
@@ -404,7 +418,7 @@ do_configure() {
     # ordinary layer files copied into the tree, not surgery on a clone that
     # only exists partway through someone else's do_compile.
     rm -rf ${EDK2_PATH}/NucRedfishPkg
-    cp -a ${WORKDIR}/NucRedfishPkg ${EDK2_PATH}/NucRedfishPkg
+    cp -a ${UNPACKDIR}/NucRedfishPkg ${EDK2_PATH}/NucRedfishPkg
 
     # --- firmware GUID drift guard -------------------------------------------
     # NUC_CAPSULE_GUID is hand-written into six places and cannot be factored
@@ -480,7 +494,7 @@ GUIDCHECK
     # this board and are simply gone.
     if [ "${EDK2_IPXE}" = "1" ]; then
         install -d ${EDK2_PATH}/UefiPayloadPkg/NetworkDrivers
-        install -m 0644 ${STAGING_DATADIR}/ipxe/ipxe-intel.efidrv \
+        install -m 0644 ${IPXE_SNP_DRIVER} \
             ${EDK2_PATH}/UefiPayloadPkg/NetworkDrivers/ipxe-intel.efidrv
     fi
 
@@ -637,6 +651,11 @@ do_compile() {
         bbfatal "edk2 build produced no UEFIPAYLOAD.fd -- see ${B}/UEFIPAYLOAD.report.txt"
 }
 
+# Where the payload's build inputs land in the sysroot. coreboot_git.bb reads
+# exactly this path under ${STAGING_DATADIR} -- as EDK2_PAYLOAD_FD and
+# EDK2_CAPSULE_TOOLS -- so keep the two in step.
+EDK2_PAYLOAD_STAGE_DIR = "${datadir}/edk2-uefipayload"
+
 # Build inputs for coreboot_git.bb, staged where a plain DEPENDS reaches them.
 #
 # UEFIPAYLOAD.fd is what coreboot embeds in CBFS. AppendRmapManifest.py and
@@ -651,15 +670,23 @@ do_compile() {
 # That is not a duplicate with a different purpose: the sysroot copy is
 # coreboot's build input, the deployed copy is the artifact a human collects.
 do_install() {
-    install -d ${D}${datadir}/edk2-uefipayload
+    install -d ${D}${EDK2_PAYLOAD_STAGE_DIR}
     install -m 0644 ${EDK2_PATH}/Build/UefiPayloadPkgX64/RELEASE_GCC/FV/UEFIPAYLOAD.fd \
-        ${D}${datadir}/edk2-uefipayload/UEFIPAYLOAD.fd
+        ${D}${EDK2_PAYLOAD_STAGE_DIR}/UEFIPAYLOAD.fd
 
-    install -d ${D}${datadir}/edk2-uefipayload/capsule-tools
+    install -d ${D}${EDK2_PAYLOAD_STAGE_DIR}/capsule-tools
     cp -a ${EDK2_PATH}/BaseTools/Source/Python \
-        ${D}${datadir}/edk2-uefipayload/capsule-tools/BaseTools-Source-Python
+        ${D}${EDK2_PAYLOAD_STAGE_DIR}/capsule-tools/BaseTools-Source-Python
+
+    # do_compile built BaseTools in that tree, so the copy above carries the
+    # bytecode CPython left behind: ~9.4 MB of .pyc stamped with absolute
+    # host WORKDIR paths and the host interpreter's version tag, into coreboot's
+    # sysroot and into sstate. GenerateCapsule.py recompiles what it needs.
+    find ${D}${EDK2_PAYLOAD_STAGE_DIR}/capsule-tools/BaseTools-Source-Python \
+        -name __pycache__ -prune -exec rm -rf {} +
+
     install -m 0755 ${EDK2_PATH}/UefiPayloadPkg/Tools/AppendRmapManifest.py \
-        ${D}${datadir}/edk2-uefipayload/capsule-tools/AppendRmapManifest.py
+        ${D}${EDK2_PAYLOAD_STAGE_DIR}/capsule-tools/AppendRmapManifest.py
 }
 
 do_deploy() {

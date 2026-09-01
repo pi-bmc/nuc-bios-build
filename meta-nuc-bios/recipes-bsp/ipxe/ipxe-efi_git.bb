@@ -33,7 +33,7 @@ SRCREV = "ebca9ed2b2e62ee579100142ee61f5ba77a3c712"
 PV = "1.21.1+git${SRCPV}"
 S = "${WORKDIR}/git"
 
-inherit deploy
+inherit deploy nopackages
 
 # The ROM is firmware; it embeds its own libc/drivers and links nothing from
 # the target sysroot.
@@ -207,6 +207,19 @@ do_compile() {
         bbfatal "intel.efidrv did not link intel.o -- it would publish no SNP for the LOM"
 }
 
+# The UNDI/SNP driver is a build INPUT to edk2-uefipayload, so it travels
+# through the sysroot rather than DEPLOY_DIR_IMAGE: a normal DEPENDS then
+# carries both the ordering and the signature, with no do_configure[depends]
+# and no existence guard on the consuming side.
+#
+# ipxe.rom stays in do_deploy: it is a finished artifact a human collects,
+# not an input to another recipe's build.
+do_install() {
+    install -d ${D}${datadir}/ipxe
+    install -m 0644 ${S}/src/bin-x86_64-efi/intel.efidrv \
+        ${D}${datadir}/ipxe/ipxe-intel.efidrv
+}
+
 do_deploy() {
     install -d ${DEPLOYDIR}
     # Deployed under coreboot's name for this artifact: its iPXE Makefile copies
@@ -221,8 +234,6 @@ do_deploy() {
 }
 
 addtask deploy after do_compile
-
-do_install[noexec] = "1"
 
 # Sanity: this build is meaningless off its target machine.
 COMPATIBLE_MACHINE = "nuc5i7ryh"

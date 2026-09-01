@@ -35,7 +35,7 @@ HOMEPAGE = "https://github.com/tianocore/edk2"
 LICENSE = "BSD-2-Clause-Patent"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/BSD-2-Clause-Patent;md5=0518d409dae93098cca8dfa932f3ab1b"
 
-inherit deploy
+inherit deploy nopackages
 
 # Everything under files/ is build configuration and platform glue for the
 # trees the three source recipes stage, not source this recipe fetches:
@@ -79,6 +79,12 @@ EDK2_PATH = "${WORKDIR}/edk2"
 
 COMPATIBLE_MACHINE = "nuc5i7ryh"
 
+# The staged FV is a binary built for one board, so the sysroot component is
+# machine-specific -- the same reasoning rpi5-uefi-build's edk2-non-osi applies
+# to the TF-A binary it carries. The three source-tree recipes stay allarch:
+# they stage source, which is not.
+PACKAGE_ARCH = "${MACHINE_ARCH}"
+
 # nasm: MdePkg/CryptoPkg X64 assembly. acpica: iasl for any .asl in the DXE
 # set. util-linux: libuuid headers for BaseTools. coreboot's edk2 "checktools"
 # target requires the same three, plus imagemagick -- see HOSTTOOLS below.
@@ -100,9 +106,6 @@ DEPENDS += "nasm-native acpica-native util-linux-native openssl-native"
 # `convert` is missing.
 HOSTTOOLS_NONFATAL += "convert"
 DEPENDS += "${@'ipxe-efi' if d.getVar('EDK2_IPXE') == '1' else ''}"
-# DEPENDS alone only guarantees do_populate_sysroot; ipxe.rom is published by
-# do_deploy, so do_configure has to wait for that task specifically.
-do_configure[depends] += "${@'ipxe-efi:do_deploy' if d.getVar('EDK2_IPXE') == '1' else ''}"
 
 # The payload is firmware, not target userspace; it embeds everything.
 INHIBIT_DEFAULT_DEPS = "1"
@@ -477,7 +480,7 @@ GUIDCHECK
     # this board and are simply gone.
     if [ "${EDK2_IPXE}" = "1" ]; then
         install -d ${EDK2_PATH}/UefiPayloadPkg/NetworkDrivers
-        install -m 0644 ${DEPLOY_DIR_IMAGE}/ipxe-intel.efidrv \
+        install -m 0644 ${STAGING_DATADIR}/ipxe/ipxe-intel.efidrv \
             ${EDK2_PATH}/UefiPayloadPkg/NetworkDrivers/ipxe-intel.efidrv
     fi
 
@@ -634,35 +637,36 @@ do_compile() {
         bbfatal "edk2 build produced no UEFIPAYLOAD.fd -- see ${B}/UEFIPAYLOAD.report.txt"
 }
 
+# Build inputs for coreboot_git.bb, staged where a plain DEPENDS reaches them.
+#
+# UEFIPAYLOAD.fd is what coreboot embeds in CBFS. AppendRmapManifest.py and
+# GenerateCapsule.py run against the FINISHED ROM, which does not exist here --
+# this recipe produces one of its inputs -- so coreboot's do_deploy is where
+# the capsule gets built, and it needs these tools to do it. GenerateCapsule.py
+# is not self-contained: it imports sibling packages under
+# BaseTools/Source/Python (Common.Uefi.Capsule.*, Common.Edk2.Capsule.*), so
+# the whole tree travels, not just the one script.
+#
+# The same UEFIPAYLOAD.fd also goes to DEPLOY_DIR_IMAGE in do_deploy below.
+# That is not a duplicate with a different purpose: the sysroot copy is
+# coreboot's build input, the deployed copy is the artifact a human collects.
+do_install() {
+    install -d ${D}${datadir}/edk2-uefipayload
+    install -m 0644 ${EDK2_PATH}/Build/UefiPayloadPkgX64/RELEASE_GCC/FV/UEFIPAYLOAD.fd \
+        ${D}${datadir}/edk2-uefipayload/UEFIPAYLOAD.fd
+
+    install -d ${D}${datadir}/edk2-uefipayload/capsule-tools
+    cp -a ${EDK2_PATH}/BaseTools/Source/Python \
+        ${D}${datadir}/edk2-uefipayload/capsule-tools/BaseTools-Source-Python
+    install -m 0755 ${EDK2_PATH}/UefiPayloadPkg/Tools/AppendRmapManifest.py \
+        ${D}${datadir}/edk2-uefipayload/capsule-tools/AppendRmapManifest.py
+}
+
 do_deploy() {
     install -d ${DEPLOYDIR}
     install -m 0644 ${EDK2_PATH}/Build/UefiPayloadPkgX64/RELEASE_GCC/FV/UEFIPAYLOAD.fd \
         ${DEPLOYDIR}/UEFIPAYLOAD.fd
     install -m 0644 ${B}/UEFIPAYLOAD.report.txt ${DEPLOYDIR}/UEFIPAYLOAD.report.txt
-
-    # --- capsule tooling, for coreboot_git.bb's do_deploy -----------------
-    # AppendRmapManifest.py and GenerateCapsule.py run against the FINISHED
-    # ROM, which does not exist here -- this recipe only produces one of its
-    # inputs (UEFIPAYLOAD.fd). coreboot_git.bb's do_deploy is where
-    # coreboot.rom is actually assembled, so that is where the capsule gets
-    # built; it needs these tools to do it.
-    #
-    # GenerateCapsule.py is not self-contained: it imports sibling packages
-    # under BaseTools/Source/Python (Common.Uefi.Capsule.*, Common.Edk2.
-    # Capsule.*), so the whole tree travels, not just the one script.
-    # Carried through DEPLOYDIR -- the only cross-recipe sharing convention
-    # this layer uses (see nuc-coreboot-rom.bb) -- rather than coreboot_git.bb
-    # reaching into this recipe's private WORKDIR, which is not guaranteed
-    # to still exist by the time coreboot's do_deploy runs (e.g. under
-    # rm_work) and which no other recipe in this layer does.
-    install -d ${DEPLOYDIR}/edk2-capsule-tools
-    rm -rf ${DEPLOYDIR}/edk2-capsule-tools/BaseTools-Source-Python
-    cp -a ${EDK2_PATH}/BaseTools/Source/Python \
-        ${DEPLOYDIR}/edk2-capsule-tools/BaseTools-Source-Python
-    install -m 0755 ${EDK2_PATH}/UefiPayloadPkg/Tools/AppendRmapManifest.py \
-        ${DEPLOYDIR}/edk2-capsule-tools/AppendRmapManifest.py
 }
 
 addtask deploy after do_compile
-
-do_install[noexec] = "1"

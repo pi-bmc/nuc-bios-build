@@ -95,6 +95,12 @@ COMPATIBLE_MACHINE = "nuc5i7ryh"
 # sign the capsule built in do_deploy below.
 DEPENDS = "bison-native flex-native python3-native util-linux-native nasm-native acpica-native coreboot-toolchain-native openssl-native"
 
+# The payload FV and the capsule tooling, staged under
+# ${STAGING_DATADIR}/edk2-uefipayload. Not declared when the LinuxBoot payload
+# is selected -- with the knob on linuxboot, the edk2 payload is not in the
+# dependency graph at all.
+DEPENDS += "${@'edk2-uefipayload' if d.getVar('NUC_BIOS_PAYLOAD') != 'linuxboot' else ''}"
+
 # Where the staged toolchain lands (coreboot-toolchain-native installs it
 # under ${datadir}); coreboot's Makefile takes it via XGCCPATH (trailing
 # slash required -- it is used as a bare prefix).
@@ -183,12 +189,10 @@ do_configure() {
             -e "s#@INITRD@#${DEPLOY_DIR_IMAGE}/initramfs-u-root.cpio#" \
             ${WORKDIR}/payload-linuxboot.config >> ${B}/.config
     else
-        # The payload is built by the edk2-uefipayload recipe and deployed as
-        # UEFIPAYLOAD.fd; substitute its absolute path (see the comment block
-        # in payload-edk2.config for why PAYLOAD_EDK2 stays on).
-        [ -e "${DEPLOY_DIR_IMAGE}/UEFIPAYLOAD.fd" ] || \
-            bbfatal "no UEFIPAYLOAD.fd in ${DEPLOY_DIR_IMAGE} -- build edk2-uefipayload first"
-        sed -e "s#@UEFIPAYLOAD@#${DEPLOY_DIR_IMAGE}/UEFIPAYLOAD.fd#" \
+        # The payload is built by the edk2-uefipayload recipe and staged into
+        # this recipe's sysroot; substitute its absolute path (see the comment
+        # block in payload-edk2.config for why PAYLOAD_EDK2 stays on).
+        sed -e "s#@UEFIPAYLOAD@#${EDK2_PAYLOAD_FD}#" \
             ${WORKDIR}/payload-edk2.config >> ${B}/.config
 
         # --- firmware GUID drift guard ----------------------------------
@@ -203,7 +207,7 @@ do_configure() {
         # so this also pins edk2-uefipayload's own NUC_CAPSULE_GUID and
         # patch 0035's INF FILE_GUID line end to end.
         python3 - "${NUC_CAPSULE_GUID}" "${WORKDIR}/payload-edk2.config" \
-            "${DEPLOY_DIR_IMAGE}/UEFIPAYLOAD.fd" <<'GUIDCHECK'
+            "${EDK2_PAYLOAD_FD}" <<'GUIDCHECK'
 import re, sys, uuid
 guid, cfg, fd = sys.argv[1], sys.argv[2], sys.argv[3]
 g = uuid.UUID(guid)
@@ -357,26 +361,23 @@ NUC_CAPSULE_KEYDIR ??= "${TOPDIR}/nuc-capsule-keys"
 NUC_CAPSULE_CERT ??= ""
 NUC_CAPSULE_KEY ??= ""
 
-# Where edk2-uefipayload_2605.bb's do_deploy staged AppendRmapManifest.py and
-# the BaseTools/Source/Python tree GenerateCapsule.py needs (it is not
-# self-contained -- it imports Common.Uefi.Capsule.* siblings).
+# Build inputs from edk2-uefipayload, read out of this recipe's own sysroot.
 #
-# MUST be DEPLOY_DIR_IMAGE, not DEPLOYDIR: deploy.bbclass makes DEPLOYDIR a
-# private per-task staging directory (${WORKDIR}/deploy-${PN}) that the
-# class only publishes into the shared, machine-specific DEPLOY_DIR_IMAGE
-# after the task finishes -- two sibling recipes' DEPLOYDIR values are two
-# different directories that are never the same on disk while either task
-# is running. This recipe's own do_configure already reads
-# ${DEPLOY_DIR_IMAGE}/UEFIPAYLOAD.fd for exactly that reason, and
-# nuc-coreboot-rom.bb reads coreboot-nuc5i7ryh.rom/UEFIPAYLOAD.fd/ipxe.rom
-# the same way -- DEPLOY_DIR_IMAGE is this layer's one cross-recipe sharing
-# convention, DEPLOYDIR never is. (Writes to ${DEPLOYDIR} elsewhere in this
-# recipe's own do_deploy are correct as they stand: that is this recipe's
-# own new output, which the class publishes into DEPLOY_DIR_IMAGE for
-# everyone else once this task completes -- the same way
-# coreboot-nuc5i7ryh.rom already worked before this file had a capsule
-# step at all.)
-EDK2_CAPSULE_TOOLS = "${DEPLOY_DIR_IMAGE}/edk2-capsule-tools"
+# The layer's rule: source and tool inputs travel through the sysroot via
+# DEPENDS, which carries both the ordering and the signature; finished
+# deployables travel through DEPLOY_DIR_IMAGE with an explicit do_X[depends].
+# UEFIPAYLOAD.fd and the capsule tooling are inputs to this build, so they come
+# from the sysroot and need no hand-written task dependency and no existence
+# guard -- a missing file here is a build-system bug, not an operator error.
+#
+# This recipe's own do_deploy still writes to ${DEPLOYDIR}, which is correct:
+# that is its new output, published into DEPLOY_DIR_IMAGE by deploy.bbclass
+# once the task completes. ${DEPLOYDIR} is never a path to read another
+# recipe's output from -- it is a private per-task staging directory
+# (${WORKDIR}/deploy-${PN}), and two sibling recipes' values are never the same
+# directory on disk.
+EDK2_PAYLOAD_FD = "${STAGING_DATADIR}/edk2-uefipayload/UEFIPAYLOAD.fd"
+EDK2_CAPSULE_TOOLS = "${STAGING_DATADIR}/edk2-uefipayload/capsule-tools"
 
 # Refuse EDK2's own published test certificate chain
 # (BaseTools/Source/Python/Pkcs7Sign) no matter how it got configured. Its
@@ -395,7 +396,7 @@ nuc_capsule_reject_test_cert() {
 
 # Resolve $fmp_cert (DER) / $fmp_signer (PEM key+cert) for signing. Does NOT
 # generate a keypair -- edk2-uefipayload_2605.bb's do_configure already must
-# have run (do_configure[depends] below covers the ordering) and either
+# have run (the DEPENDS on edk2-uefipayload covers the ordering) and either
 # used an operator-supplied identity or generated one under the same
 # NUC_CAPSULE_KEYDIR default; if neither is configured and nothing was
 # generated, that is a build-ordering problem, not something to paper over
@@ -408,7 +409,7 @@ nuc_capsule_resolve_keys() {
         fmp_keydir="${NUC_CAPSULE_KEYDIR}"
         for f in capsule.cer capsule.pem; do
             [ -e "$fmp_keydir/$f" ] || \
-                bbfatal "no capsule signing key at $fmp_keydir/$f -- edk2-uefipayload's do_configure generates this keypair when NUC_CAPSULE_CERT/NUC_CAPSULE_KEY are unset. Build edk2-uefipayload before coreboot (the normal order; do_configure already depends on its do_deploy for UEFIPAYLOAD.fd), or set NUC_CAPSULE_CERT/NUC_CAPSULE_KEY here to wherever the signing identity actually lives."
+                bbfatal "no capsule signing key at $fmp_keydir/$f -- edk2-uefipayload's do_configure generates this keypair when NUC_CAPSULE_CERT/NUC_CAPSULE_KEY are unset. Build edk2-uefipayload before coreboot (the normal order; this recipe DEPENDS on it for the payload FV, which orders its do_configure first), or set NUC_CAPSULE_CERT/NUC_CAPSULE_KEY here to wherever the signing identity actually lives."
         done
         fmp_cert="$fmp_keydir/capsule.cer"
         fmp_signer="$fmp_keydir/capsule.pem"
@@ -438,8 +439,6 @@ do_deploy() {
 
     # --- Step 1: append the RMAP manifest and generate the capsule -------
     tools="${EDK2_CAPSULE_TOOLS}"
-    [ -d "$tools" ] || \
-        bbfatal "no capsule tooling at $tools -- build edk2-uefipayload before coreboot; do_configure already depends on its do_deploy for UEFIPAYLOAD.fd, and this needs the same ordering for its Tools/BaseTools staging."
 
     python3 "$tools/AppendRmapManifest.py" \
         --region COREBOOT \
@@ -505,32 +504,14 @@ addtask deploy after do_compile
 
 do_install[noexec] = "1"
 
-# Payload inputs come from sibling recipes' deploy dirs: the edk2
-# UefiPayloadPkg FV (default) or the LinuxBoot kernel + u-root initramfs.
+# The LinuxBoot payload's inputs are finished deployables (a bzImage and a
+# u-root initramfs), so they keep the DEPLOY_DIR_IMAGE + explicit [depends]
+# arrangement. The edk2 payload's inputs are build inputs and come through the
+# sysroot -- see the DEPENDS line above.
 python () {
     if d.getVar('NUC_BIOS_PAYLOAD') == 'linuxboot':
         d.appendVarFlag('do_compile', 'depends',
                         ' linux-linuxboot:do_deploy u-root:do_deploy')
-    else:
-        # do_configure reads the deployed .fd path, so the dependency is on
-        # configure rather than compile.
-        d.appendVarFlag('do_configure', 'depends',
-                        ' edk2-uefipayload:do_deploy')
-        # do_deploy (capsule generation) reads AppendRmapManifest.py and the
-        # BaseTools/Source/Python tree edk2-uefipayload's own do_deploy
-        # stages into DEPLOY_DIR_IMAGE. That chain is already transitively
-        # ordered after edk2-uefipayload:do_deploy via
-        # do_configure -> do_compile -> "addtask deploy after do_compile"
-        # above, so this line does not change *what* ends up ordered before
-        # coreboot's do_deploy runs -- the actual bug that first broke this
-        # was EDK2_CAPSULE_TOOLS pointing at DEPLOYDIR (this recipe's own
-        # private per-task staging dir, which can never contain another
-        # recipe's output) instead of DEPLOY_DIR_IMAGE. This is declared
-        # explicitly anyway so the dependency do_deploy actually consumes is
-        # not left to be inferred through do_configure's, which could
-        # silently stop covering it if the task chain above ever changes.
-        d.appendVarFlag('do_deploy', 'depends',
-                        ' edk2-uefipayload:do_deploy')
 }
 
 # Firmware is not target userspace: the ROM embeds its own everything.

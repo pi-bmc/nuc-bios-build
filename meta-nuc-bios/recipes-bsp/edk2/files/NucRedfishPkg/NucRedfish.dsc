@@ -165,6 +165,17 @@
   MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcNcm/UsbCdcNcm.inf
 
   #
+  # ---- The BMC's CDC-ACM serial console ----
+  #
+  # EDK2 ships no CDC-ACM SerialIo driver (UsbSerialDxe in edk2-platforms is
+  # FTDI-specific), so pre-boot console redirection over the gadget's acm.GS0
+  # needs this one. It binds the communication interface, subclass 0x02, which
+  # belongs to CDC-ACM alone -- so it can never race the CDC network drivers
+  # above for the class 0x0A data interface they share a device with.
+  #
+  NucRedfishPkg/UsbCdcAcmDxe/UsbCdcAcmDxe.inf
+
+  #
   # ---- Our platform glue ----
   #
   NucRedfishPkg/Library/NucRedfishHostInterfaceLib/NucRedfishHostInterfaceLib.inf

@@ -1,0 +1,46 @@
+## @file
+#
+#  UsbCdcAcmDxe - EFI_SERIAL_IO_PROTOCOL over the BMC's CDC-ACM gadget
+#  function (acm.GS0), so the pre-boot console can be redirected to the same
+#  port a booted OS gets from cdc_acm. EDK2 has no in-tree CDC-ACM SerialIo
+#  driver; UsbSerialDxe in edk2-platforms is FTDI-specific.
+#
+#  Binds the CDC communication interface (class 0x02 subclass 0x02) and finds
+#  its sibling data interface, which keeps it clear of the RHI NIC sharing the
+#  same USB device.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+#
+##
+
+[Defines]
+  INF_VERSION                    = 0x0001001A
+  BASE_NAME                      = UsbCdcAcmDxe
+  FILE_GUID                      = 1e802cbb-dee3-4b29-8e04-63fa8faf150b
+  MODULE_TYPE                    = UEFI_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = UsbCdcAcmDxeEntry
+
+[Sources]
+  UsbCdcAcmDxe.c
+  UsbCdcAcmDxe.h
+  SerialIo.c
+
+[Packages]
+  MdeModulePkg/MdeModulePkg.dec
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  DevicePathLib
+  MemoryAllocationLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+  UefiLib
+
+[Protocols]
+  gEfiUsbIoProtocolGuid                         ## TO_START
+  gEfiSerialIoProtocolGuid                      ## BY_START
+  gEfiDevicePathProtocolGuid                    ## BY_START

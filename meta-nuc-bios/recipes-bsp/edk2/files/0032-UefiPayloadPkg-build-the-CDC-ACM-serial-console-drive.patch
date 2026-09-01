@@ -1,0 +1,46 @@
+From: appkins <nbatkins@gmail.com>
+Date: Mon, 1 Sep 2026 12:00:00 -0500
+Subject: [PATCH] UefiPayloadPkg: build the CDC-ACM serial console driver
+
+The nanokvm BMC's serial console function moved from f_serial (gser,
+vendor-specific class 0xFF, nothing binds it) to f_acm. A booted Linux
+picks CDC-ACM up with cdc_acm and needs nothing from firmware, but EDK2
+has no in-tree CDC-ACM SerialIo driver -- UsbSerialDxe in edk2-platforms
+is FTDI-specific -- so pre-boot console redirection over the same port
+needs NucRedfishPkg/UsbCdcAcmDxe.
+
+It binds the CDC communication interface (class 0x02 subclass 0x02) and
+walks to its sibling data interface for the bulk pair. Subclass 0x02 is
+CDC-ACM's alone, so it cannot collide with the RHI NIC on the same USB
+device -- which an 0x0A data-class binding would, since ECM and NCM data
+interfaces are also 0x0A.
+
+Upstream-Status: Inappropriate [platform policy]
+
+---
+
+diff --git aa/UefiPayloadPkg/UefiPayloadPkg.dsc bb/UefiPayloadPkg/UefiPayloadPkg.dsc
+--- aa/UefiPayloadPkg/UefiPayloadPkg.dsc
++++ bb/UefiPayloadPkg/UefiPayloadPkg.dsc
+@@ -1102,6 +1102,11 @@
+   MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcNcm/UsbCdcNcm.inf
+   MdeModulePkg/Bus/Usb/UsbNetwork/UsbRndis/UsbRndis.inf
+   #
++  # The BMC's CDC-ACM serial console. Independent of the NIC above: the
++  # console is a convenience, the NIC is the Redfish host interface.
++  #
++  NucRedfishPkg/UsbCdcAcmDxe/UsbCdcAcmDxe.inf
++  #
+   # The host-side consumer of EDKII_REDFISH_CONFIG_HANDLER_PROTOCOL. Stock
+   # RedfishPlatformConfigDxe (above) is what answers for HII.
+   #
+diff --git aa/UefiPayloadPkg/UefiPayloadPkg.fdf bb/UefiPayloadPkg/UefiPayloadPkg.fdf
+--- aa/UefiPayloadPkg/UefiPayloadPkg.fdf
++++ bb/UefiPayloadPkg/UefiPayloadPkg.fdf
+@@ -396,5 +396,6 @@ INF MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
+   INF MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcNcm/UsbCdcNcm.inf
+   INF MdeModulePkg/Bus/Usb/UsbNetwork/UsbRndis/UsbRndis.inf
++  INF NucRedfishPkg/UsbCdcAcmDxe/UsbCdcAcmDxe.inf
+   INF NucRedfishPkg/NucRedfishSyncDxe/NucRedfishSyncDxe.inf
+   INF NucRedfishPkg/EthConfigDxe/EthConfigDxe.inf
+ !if $(REDFISH_CLIENT) == TRUE

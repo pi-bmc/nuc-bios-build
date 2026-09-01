@@ -3,12 +3,23 @@ DESCRIPTION = "Builds UEFIPAYLOAD.fd, the UEFI environment coreboot jumps \
 into on the NUC5i7RYH, with the Redfish host-interface stack and \
 edk2-redfish-client compiled in. \
 \
+This recipe owns the BUILD and no source tree of its own. Its three inputs -- \
+edk2, edk2-platforms and edk2-redfish-client -- are fetched, patched and \
+staged by their own sibling recipes into the sysroot's ${datadir}/edk2 \
+(STAGING_DATADIR below), which IS a complete EDK2 workspace; the patch \
+series this board carries lives in recipes-bsp/edk2/edk2_git.bb, whose \
+header explains what each patch is for. Everything board-specific about \
+turning that workspace into firmware lives here: the EDK2_BUILD_FLAGS \
+mirroring coreboot's payloads/external/edk2 Kconfig, staging NucRedfishPkg \
+into a private writable copy of the edk2 tree, the capsule signing identity, \
+swapping FmpDxe's certificate PCD off EDK2's own published test chain, and \
+the NUC_CAPSULE_GUID drift guard. \
+\
 This tracks upstream tianocore/edk2 rather than the MrChromebox fork \
 coreboot's payloads/external/edk2 machinery defaults to. The fork is exactly \
 edk2-stable202605 plus 103 commits and nothing behind it, so the delta is a \
 patch series, not a divergent tree: the eighteen of those commits this board \
-actually needs are carried in SRC_URI below and cherry-pick onto master \
-without conflict. See the patch headers for what each one is for. \
+actually needs cherry-pick onto master without conflict. \
 \
 Moving to upstream is what makes RedfishClientPkg buildable. The GUIDs it \
 needs (gEdkIIRedfisEventRedfishInterfaceDisconnectionGuid and friends) are \
@@ -22,103 +33,49 @@ the tree by do_configure, instead of having to patch a tree that coreboot \
 clones halfway through its own do_compile."
 HOMEPAGE = "https://github.com/tianocore/edk2"
 LICENSE = "BSD-2-Clause-Patent"
-LIC_FILES_CHKSUM = "file://License.txt;md5=2b415520383f7964e96700ae12b4570a"
+LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/BSD-2-Clause-Patent;md5=0518d409dae93098cca8dfa932f3ab1b"
 
 inherit deploy
 
-# Three source trees, all placed on PACKAGES_PATH:
-#
-#   edk2 (gitsm)          the payload itself. edk2 vendors its deps as
-#                         submodules (openssl for Secure Boot, brotli,
-#                         oniguruma, jansson for RedfishPkg's JsonLib, ...) --
-#                         same fetcher approach as oe-core's ovmf.
-#   edk2-platforms        Features/Intel/**; coreboot puts nine of its
-#                         subdirectories on PACKAGES_PATH (mirrored below).
-#                         Nothing here references it, but keeping it means the
-#                         two builds stay comparable.
-#   edk2-redfish-client   RedfishClientPkg: the feature layer above the host
-#                         interface -- BiosDxe, BootOptionDxe,
-#                         ComputerSystemDxe and the JSON converters.
-SRC_URI = "gitsm://github.com/tianocore/edk2.git;protocol=https;branch=master;name=edk2;destsuffix=git \
-           git://github.com/tianocore/edk2-platforms.git;protocol=https;branch=master;name=platforms;destsuffix=edk2-platforms \
-           git://github.com/tianocore/edk2-redfish-client.git;protocol=https;branch=main;name=redfishclient;destsuffix=edk2-redfish-client \
-           file://NucRedfishPkg \
+# Everything under files/ is build configuration and platform glue for the
+# trees the three source recipes stage, not source this recipe fetches:
+# NucRedfishPkg (this board's own EDK2 package, staged into the edk2 copy by
+# do_configure) and the bootsplash.
+SRC_URI = "file://NucRedfishPkg \
            file://bootsplash.bmp \
            "
 
-# 0001-0018: the MrChromebox commits this board needs, cherry-picked onto
-# upstream master. Each carries its original authorship and a
-# "(cherry picked from commit ...)" trailer. They fall into two groups --
-# coreboot/payload correctness (MTRR, root bridges from HOB, the framebuffer
-# BAR offset, SMMSTORE block alignment, uninitialised memory in the entry
-# point) and features this board is configured to use (CFR SetupMenu,
-# PRIORITIZE_INTERNAL, the BGRT logo position).
-#
-# 0019-0035: local. All are applied unconditionally; what they add is
-# gated by DSC defines that default FALSE, so the -D flags below decide what is
-# actually built. Making the *patches* conditional instead would be fragile --
-# 0021, 0022 and 0023 edit regions 0020 creates or sits beside.
-SRC_URI += "${@' '.join('file://' + p for p in [ \
-    '0001-UefiCpuPkg-Disable-MTRR-programming-for-UefiPayloadP.patch', \
-    '0002-MdeModulePkg-Don-t-remove-rejected-PCI-devices.patch', \
-    '0003-UefiPayloadPkg-GraphicsOutputDxe-Allow-for-framebuff.patch', \
-    '0004-MdeModulePkg-UefiBootManagerLib-Add-Pcd-to-prioritiz.patch', \
-    '0005-UefiPayloadPkg-Hookup-Prioritize-Internal-build-opti.patch', \
-    '0006-MdeModulePkg-UefiBootManagerLib-Honor-PrioritizeInte.patch', \
-    '0007-MdeModulePkg-BootLogoLib-Add-option-to-follow-BGRT-s.patch', \
-    '0008-MdeModulePkg-Logo-Add-a-PCD-to-control-the-position-.patch', \
-    '0009-MdeModulePkg-FaultTolerantWrite-Don-t-check-for-bloc.patch', \
-    '0010-UefiPayloadPkg-Set-PcdCpuFeaturesInitOnS3Resume-to-F.patch', \
-    '0011-UefiPayloadPkg-Implement-CFR-support.patch', \
-    '0012-UefiCpuPkg-CpuDxe-Gate-EFI-Memory-Attribute-Protocol.patch', \
-    '0013-UefiPayloadPkg-SmmStoreLib-Support-64-bit-MMIO-store.patch', \
-    '0014-UefipayloadPkg-SmmStoreLib-Set-capabilities-for-stor.patch', \
-    '0015-UefiPayloadPkg-Library-CbParseLib-Populate-root-brid.patch', \
-    '0016-PcRtcEntry-Don-t-assert-if-RTC-init-fails.patch', \
-    '0017-UefiPayloadPkg-align-DXE-images-for-page-protections.patch', \
-    '0018-UefiPayloadEntry-Fix-use-of-uninitialized-memory.patch', \
-    '0019-UsbNetwork-assume-media-on-a-point-to-point-gadget.patch', \
-    '0020-UefiPayloadPkg-wire-in-the-Redfish-host-interface-st.patch', \
-    '0021-UefiPayloadPkg-give-the-onboard-NIC-a-UNDI-SNP-drive.patch', \
-    '0022-UefiPayloadPkg-wire-in-edk2-redfish-client-RedfishCl.patch', \
-    '0023-UefiPayloadPkg-give-NetworkPkg-the-protocol-producer.patch', \
-    '0024-UefiPayloadPkg-retry-Redfish-HTTP-requests-at-least-.patch', \
-    '0025-UefiPayloadPkg-CfrSetupMenuDxe-publish-CFR-options-a.patch', \
-    '0026-UefiPayloadPkg-let-SMMSTORE-hold-authenticated-varia.patch', \
-    '0027-RedfishConfigHandler-quiesce-the-Redfish-stack-after.patch', \
-    '0028-UefiBootManagerLib-do-not-enumerate-USB-NICs-as-boot.patch', \
-    '0029-UefiPayloadPkg-wire-in-the-EthernetInterface-feature.patch', \
-    '0030-UefiPayloadPkg-build-all-three-USB-CDC-network-class.patch', \
-    '0031-UsbCdcNcm-deliver-one-Ethernet-frame-per-NTB-datagra.patch', \
-    '0032-UefiPayloadPkg-build-the-CDC-ACM-serial-console-drive.patch', \
-    '0033-MdeModulePkg-add-a-USB-CDC-EEM-class-driver.patch', \
-    '0034-UefiPayloadPkg-RMAP-region-manifest-for-SMMSTORE-back.patch', \
-    '0035-UefiPayloadPkg-make-FmpDxe-FV-resident.patch', \
-    ])}"
+# Not an upstream version: this is the payload's own. The trees it builds
+# carry their own PVs in their own recipes.
+PV = "2605"
 
-# The one patch that applies to edk2-redfish-client rather than edk2. Numbered
-# out of the way (0100) so the two series never look like one, and pointed at
-# its own tree with patchdir -- do_patch defaults to ${S}, which is edk2.
-SRC_URI += "file://0100-RedfishClientPkg-fit-the-client-to-a-Redfish-host-in.patch;patchdir=${EDK2_REDFISH_CLIENT_PATH}"
+# UNPACKDIR only exists from styhead (Yocto 5.1) on; scarthgap unpacks straight
+# into WORKDIR.
+UNPACKDIR ?= "${WORKDIR}"
 
-# All three pinned, not AUTOREV: a floating revision makes the build
-# non-reproducible and silently changes what lands in the ROM. The patch series
-# is generated against these exact trees, so `patch` refusing a hunk is the
-# signal that a bump needs review.
-# edk2 master head 2026-08-04.
-SRCREV_edk2 = "fa41c179db1f9fc21eb425f44b85a16262c806ca"
-# edk2-platforms head 2026-07-28.
-SRCREV_platforms = "75efd079fed9723db8ce02365233c03b2fdc3b92"
-# edk2-redfish-client head 2026-08-04. It tracks edk2 master, which is the
-# whole reason this recipe does too.
-SRCREV_redfishclient = "92fabf8572c226cf180c62b1204380385a518db3"
-SRCREV_FORMAT = "edk2_platforms_redfishclient"
+# There is no source tree to point S at -- the file:// entries above unpack
+# straight into ${WORKDIR}, and the tree that IS built lives in EDK2_PATH.
+S = "${UNPACKDIR}"
+B = "${WORKDIR}/build"
 
-PV = "2605+git${SRCPV}"
+# Where the three sibling recipes stage their trees; must match the
+# EDK2_SOURCE_ROOT they install into. In the sysroot this directory IS a
+# complete EDK2 workspace for UefiPayloadPkg.
+EDK2_SOURCE_ROOT = "${STAGING_DATADIR}/edk2"
 
-S = "${WORKDIR}/git"
-EDK2_PLATFORMS_PATH = "${WORKDIR}/edk2-platforms"
-EDK2_REDFISH_CLIENT_PATH = "${WORKDIR}/edk2-redfish-client"
+# Read straight out of the sysroot: the build never writes into either.
+EDK2_PLATFORMS_PATH = "${EDK2_SOURCE_ROOT}/edk2-platforms"
+EDK2_REDFISH_CLIENT_PATH = "${EDK2_SOURCE_ROOT}/edk2-redfish-client"
+
+# edk2 cannot be read in place. do_configure stages NucRedfishPkg into it,
+# rewrites UefiPayloadPkg.dsc's FmpDxe certificate PCD, writes
+# MdeModulePkg/Logo/Logo.bmp and UefiPayloadPkg/NetworkDrivers/, and do_compile
+# builds host-native BaseTools inside it -- so the build gets a private,
+# writable copy. Rebuilt from scratch every configure, which is also what makes
+# turning a knob back off actually take effect rather than leaving yesterday's
+# edits behind.
+EDK2_SRC = "${EDK2_SOURCE_ROOT}/edk2"
+EDK2_PATH = "${WORKDIR}/edk2"
 
 COMPATIBLE_MACHINE = "nuc5i7ryh"
 
@@ -126,7 +83,12 @@ COMPATIBLE_MACHINE = "nuc5i7ryh"
 # set. util-linux: libuuid headers for BaseTools. coreboot's edk2 "checktools"
 # target requires the same three, plus imagemagick -- see HOSTTOOLS below.
 # openssl-native: generating/converting the capsule signing keypair below.
-DEPENDS = "nasm-native acpica-native util-linux-native openssl-native"
+#
+# The three source trees, each fetched, patched and staged by its own recipe
+# under ${STAGING_DATADIR}/edk2 -- see the EDK2_*_PATH block below and
+# recipes-bsp/{edk2,edk2-platforms,edk2-redfish-client}.
+DEPENDS = "edk2 edk2-platforms edk2-redfish-client"
+DEPENDS += "nasm-native acpica-native util-linux-native openssl-native"
 
 # The bootsplash conversion runs ImageMagick's `convert` on the build host,
 # exactly as coreboot's edk2 'logo' target does. There is no imagemagick-native
@@ -186,7 +148,7 @@ EDK2_CUSTOM_BUILD_PARAMS ??= ""
 # coreboot's nine-entry PACKAGES_PATH when CONFIG_EDK2_USE_EDK2_PLATFORMS=y,
 # plus the Redfish client tree. Order matters: edk2 itself must come first so
 # its MdePkg wins over any vendored copy in the other trees.
-EDK2_PACKAGES_PATH = "${S}:${EDK2_PLATFORMS_PATH}/Platform/Intel:${EDK2_PLATFORMS_PATH}/Silicon/Intel:${EDK2_PLATFORMS_PATH}/Features/Intel:${EDK2_PLATFORMS_PATH}/Features/Intel/Debugging:${EDK2_PLATFORMS_PATH}/Features/Intel/Network:${EDK2_PLATFORMS_PATH}/Features/Intel/OutOfBandManagement:${EDK2_PLATFORMS_PATH}/Features/Intel/PowerManagement:${EDK2_PLATFORMS_PATH}/Features/Intel/SystemInformation:${EDK2_PLATFORMS_PATH}/Features/Intel/UserInterface:${EDK2_REDFISH_CLIENT_PATH}"
+EDK2_PACKAGES_PATH = "${EDK2_PATH}:${EDK2_PLATFORMS_PATH}/Platform/Intel:${EDK2_PLATFORMS_PATH}/Silicon/Intel:${EDK2_PLATFORMS_PATH}/Features/Intel:${EDK2_PLATFORMS_PATH}/Features/Intel/Debugging:${EDK2_PLATFORMS_PATH}/Features/Intel/Network:${EDK2_PLATFORMS_PATH}/Features/Intel/OutOfBandManagement:${EDK2_PLATFORMS_PATH}/Features/Intel/PowerManagement:${EDK2_PLATFORMS_PATH}/Features/Intel/SystemInformation:${EDK2_PLATFORMS_PATH}/Features/Intel/UserInterface:${EDK2_REDFISH_CLIENT_PATH}"
 
 # --- EDK2 build defines -----------------------------------------------------
 # Mirrors coreboot payloads/external/edk2/Makefile for this board's Kconfig.
@@ -421,12 +383,25 @@ nuc_capsule_resolve_keys() {
 }
 
 do_configure() {
+    # --- private, writable copy of the staged edk2 tree ----------------------
+    # The sysroot tree is read-only and shared. Everything below writes into
+    # the tree (NucRedfishPkg, the DSC certificate PCD, Logo.bmp,
+    # NetworkDrivers/), and do_compile builds BaseTools into it.
+    #
+    # --reflink=auto because this tree is ~520 MB even after the edk2 recipe
+    # drops gitsm's recursively-fetched depth-2 submodule checkouts. On a CoW
+    # filesystem the copy is metadata only; anywhere else it falls back to a
+    # real one.
+    rm -rf "${EDK2_PATH}"
+    mkdir -p "${EDK2_PATH}"
+    cp -a --reflink=auto "${EDK2_SRC}/." "${EDK2_PATH}/"
+
     # --- stage NucRedfishPkg -------------------------------------------------
     # The whole point of building the payload in its own recipe: these are
     # ordinary layer files copied into the tree, not surgery on a clone that
     # only exists partway through someone else's do_compile.
-    rm -rf ${S}/NucRedfishPkg
-    cp -a ${WORKDIR}/NucRedfishPkg ${S}/NucRedfishPkg
+    rm -rf ${EDK2_PATH}/NucRedfishPkg
+    cp -a ${WORKDIR}/NucRedfishPkg ${EDK2_PATH}/NucRedfishPkg
 
     # --- firmware GUID drift guard -------------------------------------------
     # NUC_CAPSULE_GUID is hand-written into six places and cannot be factored
@@ -440,9 +415,9 @@ do_configure() {
     # here, where all three are on disk and it is in scope. (coreboot_git.bb
     # guards its own two copies the same way, against the finished payload.)
     python3 - "${NUC_CAPSULE_GUID}" \
-        "${S}/NucRedfishPkg/Library/NucCapsuleOnDiskLib/NucCapsuleOnDiskLib.c" \
-        "${S}/NucRedfishPkg/NucRedfishSyncDxe/NucRedfishInventory.c" \
-        "${S}/UefiPayloadPkg/UefiPayloadPkg.fdf" <<'GUIDCHECK'
+        "${EDK2_PATH}/NucRedfishPkg/Library/NucCapsuleOnDiskLib/NucCapsuleOnDiskLib.c" \
+        "${EDK2_PATH}/NucRedfishPkg/NucRedfishSyncDxe/NucRedfishInventory.c" \
+        "${EDK2_PATH}/UefiPayloadPkg/UefiPayloadPkg.fdf" <<'GUIDCHECK'
 import sys, uuid
 g = uuid.UUID(sys.argv[1])
 c = ("0x%08x,0x%04x,0x%04x,{%s}" % (g.fields[0], g.fields[1], g.fields[2],
@@ -472,21 +447,21 @@ GUIDCHECK
         case "${EDK2_BOOTSPLASH_FILE}" in
         *.bmp|*.BMP)
             install -m 0644 "${EDK2_BOOTSPLASH_FILE}" \
-                ${S}/MdeModulePkg/Logo/Logo.bmp
+                ${EDK2_PATH}/MdeModulePkg/Logo/Logo.bmp
             ;;
         *)
             command -v convert >/dev/null 2>&1 || \
                 bbfatal "EDK2_BOOTSPLASH_FILE is set to a non-BMP image but ImageMagick's 'convert' is not on the build host -- install imagemagick (coreboot's edk2 checktools requires it for the same reason)"
             convert -background None "${EDK2_BOOTSPLASH_FILE}" \
-                BMP3:${S}/MdeModulePkg/Logo/Logo.bmp
+                BMP3:${EDK2_PATH}/MdeModulePkg/Logo/Logo.bmp
             ;;
         esac
     fi
 
     # --- GOP driver + VBT (coreboot's 'gop_driver' target) -------------------
     if [ -n "${EDK2_GOP_FILE}" ]; then
-        install -m 0644 "${EDK2_GOP_FILE}" ${S}/UefiPayloadPkg/IntelGopDriver.efi
-        install -m 0644 "${COREBOOT_VBT_FILE}" ${S}/UefiPayloadPkg/vbt.bin
+        install -m 0644 "${EDK2_GOP_FILE}" ${EDK2_PATH}/UefiPayloadPkg/IntelGopDriver.efi
+        install -m 0644 "${COREBOOT_VBT_FILE}" ${EDK2_PATH}/UefiPayloadPkg/vbt.bin
     fi
 
     # --- iPXE ----------------------------------------------------------------
@@ -501,9 +476,9 @@ GUIDCHECK
     # prebuilt Realtek and ASIX UNDI blobs the fork shipped there were inert on
     # this board and are simply gone.
     if [ "${EDK2_IPXE}" = "1" ]; then
-        install -d ${S}/UefiPayloadPkg/NetworkDrivers
+        install -d ${EDK2_PATH}/UefiPayloadPkg/NetworkDrivers
         install -m 0644 ${DEPLOY_DIR_IMAGE}/ipxe-intel.efidrv \
-            ${S}/UefiPayloadPkg/NetworkDrivers/ipxe-intel.efidrv
+            ${EDK2_PATH}/UefiPayloadPkg/NetworkDrivers/ipxe-intel.efidrv
     fi
 
     # --- capsule signing certificate ------------------------------------
@@ -516,7 +491,7 @@ GUIDCHECK
     nuc_capsule_resolve_keys
 
     cert_pcd="${B}/nuc-fmp-cert.pcd"
-    python3 "${S}/BaseTools/Scripts/BinToPcd.py" \
+    python3 "${EDK2_PATH}/BaseTools/Scripts/BinToPcd.py" \
         -i "$fmp_cert" -x -o "${cert_pcd}" \
         -p gFmpDevicePkgTokenSpaceGuid.PcdFmpDevicePkcs7CertBufferXdr
 
@@ -546,7 +521,7 @@ GUIDCHECK
     # here, not passed through to GenFv. A silent structural edit to a
     # generated file is exactly how the corruption above got through once
     # already.
-    dsc="${S}/UefiPayloadPkg/UefiPayloadPkg.dsc"
+    dsc="${EDK2_PATH}/UefiPayloadPkg/UefiPayloadPkg.dsc"
     python3 - "$dsc" "$cert_pcd" <<'PY'
 import sys
 
@@ -625,7 +600,7 @@ PY
 }
 
 do_compile() {
-    cd ${S}
+    cd ${EDK2_PATH}
 
     # BaseTools are build-host tools; bitbake's exported cross CC must not leak
     # in (coreboot's Makefile does the same 'unset CC' dance). The fallback
@@ -636,15 +611,15 @@ do_compile() {
 
     # What edksetup.sh does, without needing to source bash into this task:
     # workspace env + the Conf/*.txt copied from the BaseTools templates.
-    export WORKSPACE="${S}"
+    export WORKSPACE="${EDK2_PATH}"
     export PACKAGES_PATH="${EDK2_PACKAGES_PATH}"
-    export EDK_TOOLS_PATH="${S}/BaseTools"
-    export CONF_PATH="${S}/Conf"
+    export EDK_TOOLS_PATH="${EDK2_PATH}/BaseTools"
+    export CONF_PATH="${EDK2_PATH}/Conf"
     export PYTHON_COMMAND="python3"
-    export PATH="${S}/BaseTools/BinWrappers/PosixLike:$PATH"
-    mkdir -p ${S}/Conf
+    export PATH="${EDK2_PATH}/BaseTools/BinWrappers/PosixLike:$PATH"
+    mkdir -p ${EDK2_PATH}/Conf
     for t in build_rule tools_def target; do
-        [ -e "${S}/Conf/$t.txt" ] || cp "${S}/BaseTools/Conf/$t.template" "${S}/Conf/$t.txt"
+        [ -e "${EDK2_PATH}/Conf/$t.txt" ] || cp "${EDK2_PATH}/BaseTools/Conf/$t.template" "${EDK2_PATH}/Conf/$t.txt"
     done
 
     # Same invocation as coreboot's UefiPayloadPkg target: the -t GCC toolchain
@@ -655,13 +630,13 @@ do_compile() {
         ${EDK2_BUILD_FLAGS} ${EDK2_CUSTOM_BUILD_PARAMS} \
         -y ${B}/UEFIPAYLOAD.report.txt
 
-    [ -f ${S}/Build/UefiPayloadPkgX64/RELEASE_GCC/FV/UEFIPAYLOAD.fd ] || \
+    [ -f ${EDK2_PATH}/Build/UefiPayloadPkgX64/RELEASE_GCC/FV/UEFIPAYLOAD.fd ] || \
         bbfatal "edk2 build produced no UEFIPAYLOAD.fd -- see ${B}/UEFIPAYLOAD.report.txt"
 }
 
 do_deploy() {
     install -d ${DEPLOYDIR}
-    install -m 0644 ${S}/Build/UefiPayloadPkgX64/RELEASE_GCC/FV/UEFIPAYLOAD.fd \
+    install -m 0644 ${EDK2_PATH}/Build/UefiPayloadPkgX64/RELEASE_GCC/FV/UEFIPAYLOAD.fd \
         ${DEPLOYDIR}/UEFIPAYLOAD.fd
     install -m 0644 ${B}/UEFIPAYLOAD.report.txt ${DEPLOYDIR}/UEFIPAYLOAD.report.txt
 
@@ -682,9 +657,9 @@ do_deploy() {
     # rm_work) and which no other recipe in this layer does.
     install -d ${DEPLOYDIR}/edk2-capsule-tools
     rm -rf ${DEPLOYDIR}/edk2-capsule-tools/BaseTools-Source-Python
-    cp -a ${S}/BaseTools/Source/Python \
+    cp -a ${EDK2_PATH}/BaseTools/Source/Python \
         ${DEPLOYDIR}/edk2-capsule-tools/BaseTools-Source-Python
-    install -m 0755 ${S}/UefiPayloadPkg/Tools/AppendRmapManifest.py \
+    install -m 0755 ${EDK2_PATH}/UefiPayloadPkg/Tools/AppendRmapManifest.py \
         ${DEPLOYDIR}/edk2-capsule-tools/AppendRmapManifest.py
 }
 

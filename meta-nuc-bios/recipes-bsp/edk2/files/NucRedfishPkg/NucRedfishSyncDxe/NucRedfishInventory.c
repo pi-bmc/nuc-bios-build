@@ -12,6 +12,8 @@
 
 #include "NucRedfishSyncDxe.h"
 
+#include <Guid/SystemResourceTable.h>
+
 /**
   Return the Nth string of an SMBIOS structure.
 
@@ -1229,6 +1231,319 @@ NucRedfishBuildDrivePost (
   }
 
   AsciiStrCatS (Body, NUC_REDFISH_JSON_MAX, "}");
+
+  *Json = Body;
+  return EFI_SUCCESS;
+}
+
+//
+// ImageTypeId of the platform's single FMP instance. Must track the literal
+// GUID Task 3 wired into the DSC's CAPSULE_MAIN_FW_GUID (FmpDxe's
+// FILE_GUID/ImageTypeId) and coreboot's own CONFIG_DRIVERS_EFI_MAIN_FW_GUID --
+// all three name the same ROM.
+//
+// This duplicates NucCapsuleOnDiskLib.c's mNucCapsuleFmpImageTypeId (Task 5).
+// The two modules cannot currently share it: that constant, and the
+// GetFmpLastAttemptStatus() lookup built on it, are STATIC inside a NULL
+// library linked into BdsDxe, while this file lives in the separate
+// NucRedfishSyncDxe DXE_DRIVER. Worth factoring into a small shared library
+// (e.g. a NucFmpStatusLib both link against) if a third consumer ever needs
+// the same lookup; not done here to keep this task's edit confined to
+// NucRedfishInventory.c as scoped.
+//
+STATIC CONST EFI_GUID  mNucRedfishFirmwareImageTypeId = {
+  0xd25f89e1, 0x94ec, 0x4533, { 0x80, 0xb9, 0x7f, 0x88, 0x55, 0xce, 0x0a, 0x94 }
+};
+
+/**
+  Render an EFI_GUID as the lowercase 8-4-4-4-12 text Redfish resources use.
+
+  Unlike RenderSmbiosUuid() above, no byte-order reversal: an EFI_GUID's
+  Data1/Data2/Data3/Data4 fields are already in the order this prints them,
+  whereas SMBIOS's type 1 UUID field stores the first three little-endian.
+
+  @param[in]  Guid        GUID to render.
+  @param[out] Text        Receives the rendered text.
+  @param[in]  TextSize    Size of Text in bytes, at least 37.
+**/
+STATIC
+VOID
+RenderFmpGuid (
+  IN  CONST EFI_GUID  *Guid,
+  OUT CHAR8           *Text,
+  IN  UINTN           TextSize
+  )
+{
+  AsciiSPrint (
+    Text,
+    TextSize,
+    "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+    Guid->Data1,
+    Guid->Data2,
+    Guid->Data3,
+    Guid->Data4[0],
+    Guid->Data4[1],
+    Guid->Data4[2],
+    Guid->Data4[3],
+    Guid->Data4[4],
+    Guid->Data4[5],
+    Guid->Data4[6],
+    Guid->Data4[7]
+    );
+}
+
+/**
+  Copy a UCS-2 FMP descriptor string into the ASCII the JSON body carries.
+
+  Same job as CopyInventoryString() above, for a CHAR16 source: FMP descriptor
+  strings (ImageIdName, VersionName) are UEFI strings, unlike SMBIOS's
+  already-ASCII ones. Truncation is silent and deliberate: a version string
+  longer than the field is still more useful reported short than not reported.
+  Anything outside 7-bit ASCII becomes '?', keeping the body valid JSON rather
+  than merely ugly.
+
+  @param[in]  Source    Source string, may be NULL.
+  @param[out] Dest      Destination buffer.
+  @param[in]  DestSize  Size of Dest in bytes.
+**/
+STATIC
+VOID
+CopyFmpString (
+  IN  CONST CHAR16  *Source,
+  OUT CHAR8         *Dest,
+  IN  UINTN         DestSize
+  )
+{
+  UINTN  Index;
+
+  if (DestSize == 0) {
+    return;
+  }
+
+  Dest[0] = '\0';
+  if (Source == NULL) {
+    return;
+  }
+
+  for (Index = 0; (Index < DestSize - 1) && (Source[Index] != L'\0'); Index++) {
+    Dest[Index] = (Source[Index] < 0x80) ? (CHAR8)Source[Index] : '?';
+  }
+
+  Dest[Index] = '\0';
+}
+
+EFI_STATUS
+NucRedfishCollectFirmwareStatus (
+  OUT NUC_REDFISH_FIRMWARE_STATUS  *Status
+  )
+{
+  EFI_STATUS                         Status1;
+  EFI_STATUS                         Status2;
+  EFI_HANDLE                         *Handles;
+  UINTN                              HandleCount;
+  UINTN                              Index;
+  EFI_FIRMWARE_MANAGEMENT_PROTOCOL   *Fmp;
+  EFI_FIRMWARE_IMAGE_DESCRIPTOR      *Info;
+  UINTN                              InfoSize;
+  UINT32                             DescriptorVersion;
+  UINT32                             PackageVersion;
+  CHAR16                             *PackageVersionName;
+  UINT8                              DescriptorCount;
+  UINTN                              DescriptorSize;
+  BOOLEAN                            Found;
+
+  if (Status == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  ZeroMem (Status, sizeof (*Status));
+
+  Status1 = gBS->LocateHandleBuffer (
+                   ByProtocol,
+                   &gEfiFirmwareManagementProtocolGuid,
+                   NULL,
+                   &HandleCount,
+                   &Handles
+                   );
+  if (EFI_ERROR (Status1)) {
+    DEBUG ((DEBUG_ERROR, "NucRedfishSync: no Firmware Management Protocol installed - %r\n", Status1));
+    return EFI_NOT_FOUND;
+  }
+
+  Found = FALSE;
+  for (Index = 0; (Index < HandleCount) && !Found; Index++) {
+    Status2 = gBS->HandleProtocol (
+                     Handles[Index],
+                     &gEfiFirmwareManagementProtocolGuid,
+                     (VOID **)&Fmp
+                     );
+    if (EFI_ERROR (Status2)) {
+      continue;
+    }
+
+    //
+    // Size query first: GetImageInfo reports what it needs through InfoSize
+    // and returns EFI_BUFFER_TOO_SMALL. Anything else means this instance has
+    // nothing to say.
+    //
+    InfoSize = 0;
+    if (Fmp->GetImageInfo (Fmp, &InfoSize, NULL, NULL, NULL, NULL, NULL, NULL) != EFI_BUFFER_TOO_SMALL) {
+      continue;
+    }
+
+    Info = AllocateZeroPool (InfoSize);
+    if (Info == NULL) {
+      continue;
+    }
+
+    PackageVersionName = NULL;
+    Status2            = Fmp->GetImageInfo (
+                                 Fmp,
+                                 &InfoSize,
+                                 Info,
+                                 &DescriptorVersion,
+                                 &DescriptorCount,
+                                 &DescriptorSize,
+                                 &PackageVersion,
+                                 &PackageVersionName
+                                 );
+
+    if (!EFI_ERROR (Status2) &&
+        (DescriptorCount > 0) &&
+        CompareGuid (&Info->ImageTypeId, &mNucRedfishFirmwareImageTypeId))
+    {
+      RenderFmpGuid (&Info->ImageTypeId, Status->ImageTypeId, sizeof (Status->ImageTypeId));
+      CopyFmpString (Info->ImageIdName, Status->Name, sizeof (Status->Name));
+      CopyFmpString (Info->VersionName, Status->Version, sizeof (Status->Version));
+
+      Status->VersionNumber          = Info->Version;
+      Status->LowestSupportedVersion = Info->LowestSupportedImageVersion;
+      Status->Updateable             = (BOOLEAN)((Info->AttributesSetting & IMAGE_ATTRIBUTE_IMAGE_UPDATABLE) != 0);
+
+      //
+      // See the header comment on NucRedfishCollectFirmwareStatus(): a
+      // descriptor below version 3 carries no LastAttempt* fields at all, and
+      // even at version 3+ a status/version pair that is both zero is
+      // FmpDxe's own "nothing recorded yet" default, indistinguishable here
+      // from a genuine successful attempt of version 0. Either way there is
+      // nothing to report.
+      //
+      if ((DescriptorVersion >= 3) &&
+          ((Info->LastAttemptStatus != LAST_ATTEMPT_STATUS_SUCCESS) || (Info->LastAttemptVersion != 0)))
+      {
+        Status->LastAttemptVersion = Info->LastAttemptVersion;
+        Status->LastAttemptStatus  = Info->LastAttemptStatus;
+        Status->HasLastAttempt     = TRUE;
+      }
+
+      Found = TRUE;
+    }
+
+    if (PackageVersionName != NULL) {
+      FreePool (PackageVersionName);
+    }
+
+    FreePool (Info);
+  }
+
+  FreePool (Handles);
+
+  DEBUG ((
+    DEBUG_ERROR,
+    "NucRedfishSync: firmware status found=%a name='%a' version='%a' (%u) attempt=%a version=%u status=%u\n",
+    Found ? "yes" : "no",
+    Status->Name,
+    Status->Version,
+    Status->VersionNumber,
+    Status->HasLastAttempt ? "yes" : "no",
+    Status->LastAttemptVersion,
+    Status->LastAttemptStatus
+    ));
+
+  return Found ? EFI_SUCCESS : EFI_NOT_FOUND;
+}
+
+EFI_STATUS
+NucRedfishBuildFirmwareInventoryPatch (
+  IN  NUC_REDFISH_FIRMWARE_STATUS  *Status,
+  OUT CHAR8                        **Json
+  )
+{
+  CHAR8  *Body;
+  CHAR8  Numbers[160];
+
+  if ((Status == NULL) || (Json == NULL)) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  Body = AllocateZeroPool (NUC_REDFISH_JSON_MAX);
+  if (Body == NULL) {
+    return EFI_OUT_OF_RESOURCES;
+  }
+
+  //
+  // @odata.type, Id, Version, Updateable and Status lead so the object is
+  // never empty. Version falls back to "unknown" rather than being omitted:
+  // unlike the optional strings elsewhere in this file, the inventory duty
+  // this PATCH exists for is meaningless without it (task 7 brief).
+  //
+  AsciiSPrint (
+    Body,
+    NUC_REDFISH_JSON_MAX,
+    "{\"@odata.type\":\"#SoftwareInventory.v1_2_3.SoftwareInventory\""
+    ",\"Id\":\"%a\""
+    ",\"Version\":\"%a\""
+    ",\"Updateable\":%a"
+    ",\"Status\":{\"State\":\"Enabled\",\"Health\":\"OK\"}",
+    NUC_REDFISH_FIRMWARE_INVENTORY_ID,
+    (Status->Version[0] != '\0') ? Status->Version : "unknown",
+    Status->Updateable ? "true" : "false"
+    );
+
+  AppendJsonString (Body, NUC_REDFISH_JSON_MAX, "Name", Status->Name);
+
+  //
+  // SoftwareId carries the ImageTypeId GUID this platform's capsules are
+  // built against (Task 3's CAPSULE_MAIN_FW_GUID), so an operator comparing
+  // "what is installed" with "what a staged capsule targets" has both in one
+  // place.
+  //
+  AppendJsonString (Body, NUC_REDFISH_JSON_MAX, "SoftwareId", Status->ImageTypeId);
+
+  //
+  // The integers the FMP publishes, under Oem because SoftwareInventory
+  // v1_2_x has no schema property for them -- same placement the RPi5 host in
+  // this fleet uses. PATCH merges per DSP0266, but only shallowly at the top
+  // level (this BMC's hostCollectionMerge does a top-level key merge, so an
+  // "Oem" sent in a PATCH replaces the whole nested object rather than
+  // merging inside it): LastAttemptVersion/LastAttemptStatus are therefore
+  // included only when Status->HasLastAttempt is TRUE. Omitting them on a
+  // boot with nothing to report leaves the version/status the BMC already
+  // has from the last real capsule attempt as the current value, rather than
+  // wiping it with a fabricated pair -- the requirement task 7 exists to
+  // satisfy.
+  //
+  AsciiSPrint (
+    Numbers,
+    sizeof (Numbers),
+    ",\"Oem\":{\"PiBmc\":{\"FirmwareVersion\":%u,\"LowestSupportedVersion\":%u",
+    Status->VersionNumber,
+    Status->LowestSupportedVersion
+    );
+  AsciiStrCatS (Body, NUC_REDFISH_JSON_MAX, Numbers);
+
+  if (Status->HasLastAttempt) {
+    AsciiSPrint (
+      Numbers,
+      sizeof (Numbers),
+      ",\"LastAttemptVersion\":%u,\"LastAttemptStatus\":%u",
+      Status->LastAttemptVersion,
+      Status->LastAttemptStatus
+      );
+    AsciiStrCatS (Body, NUC_REDFISH_JSON_MAX, Numbers);
+  }
+
+  AsciiStrCatS (Body, NUC_REDFISH_JSON_MAX, "}}}");
 
   *Json = Body;
   return EFI_SUCCESS;

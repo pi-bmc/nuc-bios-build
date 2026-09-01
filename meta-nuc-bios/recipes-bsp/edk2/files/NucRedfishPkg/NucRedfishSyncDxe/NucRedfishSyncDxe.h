@@ -28,6 +28,7 @@
 #include <Protocol/DevicePath.h>
 #include <Protocol/DiskInfo.h>
 #include <Protocol/EdkIIRedfishConfigHandler.h>
+#include <Protocol/FirmwareManagement.h>
 #include <Protocol/NvmExpressPassthru.h>
 #include <Protocol/Smbios.h>
 
@@ -44,6 +45,15 @@
 #define NUC_REDFISH_MEMORY_URI        L"/redfish/v1/Systems/1/Memory"
 #define NUC_REDFISH_PROCESSORS_URI    L"/redfish/v1/Systems/1/Processors"
 #define NUC_REDFISH_DRIVES_URI        L"/redfish/v1/Systems/1/Storage/1/Drives"
+
+//
+// Firmware inventory member id. The BMC synthesizes nothing and serves
+// exactly whatever id the host PATCHes (api/redfish/update_service.go); this
+// one is chosen -- not derived from anything -- to match the RPi5 host in
+// this fleet, which reports the same id for the same reason.
+//
+#define NUC_REDFISH_FIRMWARE_INVENTORY_ID   "BiosFirmware"
+#define NUC_REDFISH_FIRMWARE_INVENTORY_URI  L"/redfish/v1/UpdateService/FirmwareInventory/BiosFirmware"
 
 //
 // Boot progress state reported at the point the config handler runs: DXE is
@@ -325,6 +335,74 @@ EFI_STATUS
 NucRedfishBuildDrivePost (
   IN  NUC_REDFISH_DRIVE  *Drive,
   OUT CHAR8              **Json
+  );
+
+//
+// This platform's single updatable firmware image, as
+// EFI_FIRMWARE_MANAGEMENT_PROTOCOL's GetImageInfo() describes the FMP
+// instance whose ImageTypeId is d25f89e1-94ec-4533-80b9-7f8855ce0a94 (the SPI
+// image Task 3 wired into the DSC's CAPSULE_MAIN_FW_GUID), reduced to what a
+// Redfish SoftwareInventory carries. Field shape mirrors the RPi5 host's
+// RPI_REDFISH_FIRMWARE_IMAGE for fleet consistency.
+//
+typedef struct {
+  CHAR8      Name[NUC_REDFISH_STR_MAX];          // ImageIdName
+  CHAR8      Version[NUC_REDFISH_STR_MAX];       // VersionName, the human-readable one
+  CHAR8      ImageTypeId[37];                    // rendered GUID, 36 chars + NUL
+  UINT32     VersionNumber;                      // Version, the integer FMP/ESRT compares
+  UINT32     LowestSupportedVersion;
+  UINT32     LastAttemptVersion;
+  UINT32     LastAttemptStatus;
+  BOOLEAN    HasLastAttempt;                     // FALSE: nothing to report, omit from the PATCH
+  BOOLEAN    Updateable;
+} NUC_REDFISH_FIRMWARE_STATUS;
+
+/**
+  Collect this platform's firmware status from the single FMP instance whose
+  ImageTypeId is this platform's firmware GUID -- the same instance Task 5's
+  NucCapsuleOnDiskLib locates to confirm a capsule apply.
+
+  LastAttemptVersion/LastAttemptStatus are populated only when there is
+  something genuine to report: the descriptor must be version 3 or higher
+  (older producers do not carry the fields at all), and the pair must not
+  both read zero. FmpDxe's variable-backed defaults for both are zero
+  (VariableSupport.c: DEFAULT_LASTATTEMPTSTATUS/VERSION), which is also the
+  numeric value of LAST_ATTEMPT_STATUS_SUCCESS -- so an FMP that has never
+  processed a capsule reads back identically to one reporting a successful
+  attempt of version 0, a version this platform never produces. Treating that
+  combination as "nothing recorded" avoids fabricating an attempt that never
+  happened.
+
+  @param[out] Status  Receives the collected firmware status.
+
+  @retval EFI_SUCCESS    The FMP instance was found and Status was filled in.
+  @retval EFI_NOT_FOUND  No such FMP instance is installed (for example, a
+                         build without capsule support).
+**/
+EFI_STATUS
+NucRedfishCollectFirmwareStatus (
+  OUT NUC_REDFISH_FIRMWARE_STATUS  *Status
+  );
+
+/**
+  Build the SoftwareInventory PATCH body for the platform firmware.
+
+  LastAttemptVersion/LastAttemptStatus are emitted only when Status->HasLastAttempt
+  is TRUE. PATCH merges per DSP0266, so omitting them on a boot with nothing to
+  report leaves whatever the last real attempt recorded as the current value on
+  the BMC's side, rather than overwriting it with a fabricated zero.
+
+  @param[in]  Status  Firmware status to report.
+  @param[out] Json    Receives an allocated ASCII JSON body. Caller frees with
+                      FreePool().
+
+  @retval EFI_SUCCESS           Body was built.
+  @retval EFI_OUT_OF_RESOURCES  Allocation failed.
+**/
+EFI_STATUS
+NucRedfishBuildFirmwareInventoryPatch (
+  IN  NUC_REDFISH_FIRMWARE_STATUS  *Status,
+  OUT CHAR8                        **Json
   );
 
 #endif // NUC_REDFISH_SYNC_DXE_H_

@@ -683,6 +683,70 @@ ReportDrives (
 }
 
 /**
+  Report what firmware this board runs, as a Redfish SoftwareInventory.
+
+  This is duty 4 of the BMC's host-firmware contract: report Version and
+  LastAttempt* each boot, so the BMC can tell whether a staged capsule was
+  ever applied and how it went. LastAttemptStatus survives to be reported at
+  all only because the RMAP manifest (Task 6) keeps SMMSTORE out of every
+  capsule write range, so FmpDeviceSmmLib never swaps gRT's variable services
+  for no-op stubs and FmpDxe can persist the final status across the reset a
+  successful apply causes.
+
+  PATCH rather than POST: the resource is fixed and per-node, so
+  re-reporting the same node updates it rather than accumulating duplicates.
+  Fail-open like everything else here -- a BMC with no UpdateService just
+  404s.
+
+  @param[in] Service  The Redfish service to report to.
+**/
+STATIC
+VOID
+ReportFirmwareInventory (
+  IN REDFISH_SERVICE  Service
+  )
+{
+  NUC_REDFISH_FIRMWARE_STATUS  FirmwareStatus;
+  REDFISH_RESPONSE             Response;
+  EFI_STATUS                   Status;
+  CHAR8                        *Body;
+
+  Status = NucRedfishCollectFirmwareStatus (&FirmwareStatus);
+  if (EFI_ERROR (Status)) {
+    //
+    // Expected on a build without the capsule FMP wired up: there is no
+    // matching Firmware Management Protocol instance to ask, so there is
+    // nothing to report.
+    //
+    DEBUG ((DEBUG_ERROR, "NucRedfishSync: no firmware inventory to report - %r\n", Status));
+    return;
+  }
+
+  Body   = NULL;
+  Status = NucRedfishBuildFirmwareInventoryPatch (&FirmwareStatus, &Body);
+  if (EFI_ERROR (Status) || (Body == NULL)) {
+    return;
+  }
+
+  ZeroMem (&Response, sizeof (Response));
+  Status = RedfishHttpPatchResource (Service, NUC_REDFISH_FIRMWARE_INVENTORY_URI, Body, &Response);
+  LogResult ("PATCH", NUC_REDFISH_FIRMWARE_INVENTORY_URI, Status, &Response);
+  RedfishHttpFreeResponse (&Response);
+
+  FreePool (Body);
+
+  DEBUG ((
+    DEBUG_ERROR,
+    "NucRedfishSync: reported firmware '%a' version %a (%u), updateable %a, attempt=%a\n",
+    FirmwareStatus.Name,
+    FirmwareStatus.Version,
+    FirmwareStatus.VersionNumber,
+    FirmwareStatus.Updateable ? "yes" : "no",
+    FirmwareStatus.HasLastAttempt ? "yes" : "no"
+    ));
+}
+
+/**
   Perform the host-interface exchange against the discovered Redfish service.
 
   @param[in] ServiceInfo  Discovered Redfish service information.
@@ -777,6 +841,11 @@ NucRedfishSync (
   // 2c. Report the drives.
   //
   ReportDrives (Service);
+
+  //
+  // 2d. Report the firmware inventory (contract duty 4).
+  //
+  ReportFirmwareInventory (Service);
 
   //
   // 3. Read back the system, including any boot override the BMC wants applied.

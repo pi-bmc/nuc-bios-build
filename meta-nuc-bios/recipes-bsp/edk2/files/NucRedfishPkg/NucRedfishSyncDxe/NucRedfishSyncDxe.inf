@@ -53,6 +53,7 @@
   gEfiBlockIoProtocolGuid                   ## CONSUMES
   gEfiDevicePathProtocolGuid                ## CONSUMES
   gEfiNvmExpressPassThruProtocolGuid        ## CONSUMES
+  gEfiFirmwareManagementProtocolGuid        ## CONSUMES
 
 [Guids]
   gEfiGlobalVariableGuid                    ## CONSUMES

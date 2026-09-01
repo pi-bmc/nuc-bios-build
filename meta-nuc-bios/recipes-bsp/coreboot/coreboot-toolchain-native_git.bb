@@ -10,7 +10,19 @@ HOMEPAGE = "https://doc.coreboot.org/tutorial/part1.html"
 
 require coreboot-source.inc
 
-SRC_URI = "${COREBOOT_GIT_URI}"
+SRC_URI = "${COREBOOT_GIT_URI} \
+           https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz;name=gmp;unpack=0 \
+           https://ftp.gnu.org/gnu/mpfr/mpfr-4.2.2.tar.xz;name=mpfr;unpack=0 \
+           https://ftp.gnu.org/gnu/mpc/mpc-1.4.1.tar.xz;name=mpc;unpack=0 \
+           https://ftp.gnu.org/gnu/gcc/gcc-15.2.0/gcc-15.2.0.tar.xz;name=gcc;unpack=0 \
+           https://ftp.gnu.org/gnu/binutils/binutils-2.46.1.tar.xz;name=binutils;unpack=0 \
+           "
+
+SRC_URI[gmp.sha256sum]      = "a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898"
+SRC_URI[mpfr.sha256sum]     = "b67ba0383ef7e8a8563734e2e889ef5ec3c3b898a01d00fa0a6869ad81c6ce01"
+SRC_URI[mpc.sha256sum]      = "91204cd32f164bd3b7c992d4a6a8ce6519511aadab30f78b6982d0bf8d73e931"
+SRC_URI[gcc.sha256sum]      = "438fd996826b0c82485a29da03a72d71d6e3541a83ec702df4271f6fe025d24e"
+SRC_URI[binutils.sha256sum] = "e127a709cba24c76de8936cb7083dd768f28cd37eb010492e2f19b71eb1294e4"
 
 S = "${WORKDIR}/git"
 
@@ -20,14 +32,25 @@ inherit native
 # come from HOSTTOOLS; these do not).
 DEPENDS = "bison-native flex-native m4-native xz-native"
 
-# buildgcc downloads the gcc/binutils/gmp/... source tarballs itself into
-# util/crossgcc/tarballs (checksummed against util/crossgcc/sum/). Keeping
-# that mechanism (instead of mirroring every tarball in SRC_URI) follows the
-# upstream-supported path; same network-in-compile precedent as the rest of
-# this layer.
+# The crossgcc-i386 source tarballs come through the Yocto fetcher (SRC_URI
+# above: DL_DIR-cached, sha256-checked, MIRRORS-capable) and are staged into
+# util/crossgcc/tarballs, where buildgcc verifies them against its own sha1
+# sums (util/crossgcc/sum/) and skips its downloads. buildgcc's own fetch
+# used to be the mechanism here, and broke the day ftpmirror.gnu.org's
+# redirector went flaky mid-download (gmp, 2026-08-31); the versions are
+# pinned by the coreboot revision, so keep this list in step with
+# util/crossgcc/buildgcc's *_VERSION pins when COREBOOT_GIT_URI moves.
+# The network flag stays as a fail-open escape hatch for any archive this
+# list misses.
 do_compile[network] = "1"
 
-do_configure[noexec] = "1"
+do_configure() {
+    install -d ${S}/util/crossgcc/tarballs
+    for t in gmp-6.3.0.tar.xz mpfr-4.2.2.tar.xz mpc-1.4.1.tar.xz \
+             gcc-15.2.0.tar.xz binutils-2.46.1.tar.xz; do
+        install -m 0644 ${WORKDIR}/$t ${S}/util/crossgcc/tarballs/$t
+    done
+}
 
 do_compile() {
     # Host tools: keep bitbake's compiler env out of buildgcc's probes (its

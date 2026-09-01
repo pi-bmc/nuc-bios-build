@@ -32,18 +32,21 @@
 
 [PcdsFixedAtBuild]
   #
-  # MAC address of the USB CDC-ECM gadget the BMC (JetKVM) presents to the NUC.
-  # It MUST equal the real usb0 ECM gadget MAC and MUST also be encoded in
-  # gEfiRedfishPkgTokenSpaceGuid.PcdRedfishRestExServiceDevicePath in the DSC.
+  # MAC address the BMC's USB network gadget assigns to the HOST side
+  # (host_addr) -- the MAC the NUC's own CDC NIC comes up with, which the
+  # Type 42 record and PcdRedfishRestExServiceDevicePath (in the DSC, patch
+  # 0020/0024) must both equal or Redfish discovery never selects the NIC
+  # and not a single request is made (observed 2026-09-01).
   #
-  # This is host_addr, the MAC the NUC's own CDC-ECM NIC comes up with -- not
-  # dev_addr (the BMC's usb0). Both are now derived deterministically from the
-  # JetKVM's device ID rather than randomised per boot, so this is a stable
-  # value and no longer a hand-configured convention: see
-  # internal/usbgadget/ethernet.go, SetEthernetMACSeed/deriveGadgetMAC.
-  # Confirmed on hardware 2026-07-29: the NUC enumerates it as enxdaa762233ef5.
+  # The default is the nanokvm-app RHI contract (RHIHostMAC in
+  # pkg/device/usbgadget/usbgadget.go, "da:c0:ff:ee:10:02"; dev side
+  # ...:10:01), the same wire contract the RPi5 firmware uses. A
+  # JetKVM-managed unit instead derives host_addr from its device ID
+  # (internal/usbgadget/ethernet.go deriveGadgetMAC; e.g. DA:A7:62:23:3E:F5
+  # for the unit bootstrapped 2026-07-29) -- override this PCD and the DSC
+  # device path together when building for one.
   #
-  gNucRedfishPkgTokenSpaceGuid.PcdNucRedfishEcmMac|{0xDA, 0xA7, 0x62, 0x23, 0x3E, 0xF5}|VOID*|0x00000001
+  gNucRedfishPkgTokenSpaceGuid.PcdNucRedfishEcmMac|{0xDA, 0xC0, 0xFF, 0xEE, 0x10, 0x02}|VOID*|0x00000001
 
   #
   # HTTP Basic credentials for the BMC's Redfish service. Empty user means the

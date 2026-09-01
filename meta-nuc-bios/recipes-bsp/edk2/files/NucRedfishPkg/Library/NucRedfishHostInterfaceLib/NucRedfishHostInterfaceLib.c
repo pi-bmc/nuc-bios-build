@@ -36,17 +36,22 @@
 // PcdNucRedfishEcmMac (.dec) and the PcdRedfishRestExServiceDevicePath MAC
 // node (.dsc).
 //
-// No longer a hand-configured convention: the gadget derives both MACs from
-// the JetKVM's device ID (internal/usbgadget/ethernet.go, deriveGadgetMAC), so
-// they survive reboots. Confirmed on hardware 2026-07-29 -- the NUC enumerates
-// this NIC as enxdaa762233ef5 and pings the BMC at 169.254.10.1 over it.
+// The value is the nanokvm-app RHI contract (RHIHostMAC,
+// pkg/device/usbgadget/usbgadget.go: da:c0:ff:ee:10:02; the BMC's own side
+// is ...:10:01) -- the same fixed wire contract the RPi5 firmware uses. A
+// JetKVM instead derives both MACs from its device ID
+// (internal/usbgadget/ethernet.go, deriveGadgetMAC; the 2026-07-29 unit
+// enumerated as enxdaa762233ef5) -- change these six defines, the .dec PCD
+// and the .dsc device path together when building for one. The wrong MAC
+// fails silently as zero Redfish traffic (observed 2026-09-01: nanokvm
+// gadget + JetKVM MAC = discovery never selects the NIC).
 //
 #define NUC_REDFISH_ECM_MAC_0  0xDA
-#define NUC_REDFISH_ECM_MAC_1  0xA7
-#define NUC_REDFISH_ECM_MAC_2  0x62
-#define NUC_REDFISH_ECM_MAC_3  0x23
-#define NUC_REDFISH_ECM_MAC_4  0x3E
-#define NUC_REDFISH_ECM_MAC_5  0xF5
+#define NUC_REDFISH_ECM_MAC_1  0xC0
+#define NUC_REDFISH_ECM_MAC_2  0xFF
+#define NUC_REDFISH_ECM_MAC_3  0xEE
+#define NUC_REDFISH_ECM_MAC_4  0x10
+#define NUC_REDFISH_ECM_MAC_5  0x02
 
 //
 // USB idVendor/idProduct of the gadget. Linux g_ether/CDC-ECM defaults are

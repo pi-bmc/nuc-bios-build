@@ -30,6 +30,20 @@ local_conf_header:
   nuc-bios: |
     # NUC5i7RYH BIOS build configuration
     MACHINE = "nuc5i7ryh"
+    # Host glibc (rolling Arch, 2.44) overran the poky-pinned uninative
+    # (2.43): bitbake then disables uninative, and a tmp/ carrying binaries
+    # relocated against the OLD uninative mixes fatally with freshly
+    # host-linked ones ("GLIBC_2.44 not found" from python3-native,
+    # empty-workdir corpses like acpica-native). Pin the 2.44-era
+    # uninative so both populations run again (forcevariable: poky's
+    # yocto-uninative.inc assigns VERSION/MAXGLIBC with plain = AFTER
+    # local.conf is parsed; the checksums are ?= and need no force).
+    # Checksum verified against
+    # the published .sha256sum. Bump alongside future host glibc bumps.
+    UNINATIVE_MAXGLIBCVERSION:forcevariable = "2.44"
+    UNINATIVE_VERSION:forcevariable = "5.2"
+    UNINATIVE_URL = "http://downloads.yoctoproject.org/releases/uninative/${UNINATIVE_VERSION}/"
+    UNINATIVE_CHECKSUM[x86_64] = "1a2749c1379fd9f60ea3c82f1bf4844924d5a99117b74a70c57036e94e2379d4"
     DISTRO = "poky"
     # Parallel build tuning
     BB_NUMBER_THREADS = "${@oe.utils.cpu_count()}"

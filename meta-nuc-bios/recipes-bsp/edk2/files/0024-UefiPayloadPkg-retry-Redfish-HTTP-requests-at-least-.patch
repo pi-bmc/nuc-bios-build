@@ -38,7 +38,7 @@ index 714cdbb033..9ac354c092 100644
 +++ b/UefiPayloadPkg/UefiPayloadPkg.dsc
 @@ -1062,6 +1062,28 @@
    gEfiRedfishPkgTokenSpaceGuid.PcdRedfishRestExServiceDevicePath.DevicePathNum|1
-   gEfiRedfishPkgTokenSpaceGuid.PcdRedfishRestExServiceDevicePath.DevicePath|{DEVICE_PATH("MAC(DAA762233EF5,0x1)")}
+   gEfiRedfishPkgTokenSpaceGuid.PcdRedfishRestExServiceDevicePath.DevicePath|{DEVICE_PATH("MAC(DAC0FFEE1002,0x1)")}
  
 +  #
 +  # Retry every HTTP method at least once. These default to 0, which makes

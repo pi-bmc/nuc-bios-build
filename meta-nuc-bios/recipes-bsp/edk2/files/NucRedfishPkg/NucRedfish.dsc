@@ -154,15 +154,24 @@
   gEfiRedfishPkgTokenSpaceGuid.PcdRedfishRestExServiceDevicePath.DevicePathNum|1
   gEfiRedfishPkgTokenSpaceGuid.PcdRedfishRestExServiceDevicePath.DevicePath|{DEVICE_PATH("MAC(DAC0FFEE1002,0x1)")}
 
+  #
+  # Station address for the USB CDC-EEM NIC. Must match PcdNucRedfishEcmMac
+  # above -- EEM carries no Ethernet functional descriptor, so unlike ECM,
+  # RNDIS and NCM there is no iMACAddress for UsbCdcEem to read the address
+  # from.
+  #
+  gEfiMdeModulePkgTokenSpaceGuid.PcdUsbCdcEemMacAddress|{0xDA, 0xC0, 0xFF, 0xEE, 0x10, 0x02}
+
 [Components]
   #
   # ---- Existing standalone USB-network transports (kept from the original
-  #      recipe; SNP producer + CDC-ECM/RNDIS/NCM class bindings) ----
+  #      recipe; SNP producer + CDC-ECM/RNDIS/NCM/EEM class bindings) ----
   #
   MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/NetworkCommon.inf
   MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcEcm/UsbCdcEcm.inf
   MdeModulePkg/Bus/Usb/UsbNetwork/UsbRndis/UsbRndis.inf
   MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcNcm/UsbCdcNcm.inf
+  MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcEem/UsbCdcEem.inf
 
   #
   # ---- The BMC's CDC-ACM serial console ----

@@ -15,24 +15,26 @@ Upstream-Status: Inappropriate [platform policy]
 diff --git aa/UefiPayloadPkg/UefiPayloadPkg.dsc bb/UefiPayloadPkg/UefiPayloadPkg.dsc
 --- aa/UefiPayloadPkg/UefiPayloadPkg.dsc
 +++ bb/UefiPayloadPkg/UefiPayloadPkg.dsc
-@@ -1100,6 +1100,8 @@
+@@ -1100,6 +1100,9 @@
    #
    MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/NetworkCommon.inf
    MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcEcm/UsbCdcEcm.inf
 +  MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcNcm/UsbCdcNcm.inf
 +  MdeModulePkg/Bus/Usb/UsbNetwork/UsbRndis/UsbRndis.inf
++  MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcEem/UsbCdcEem.inf
    #
    # The host-side consumer of EDKII_REDFISH_CONFIG_HANDLER_PROTOCOL. Stock
    # RedfishPlatformConfigDxe (above) is what answers for HII.
 diff --git aa/UefiPayloadPkg/UefiPayloadPkg.fdf bb/UefiPayloadPkg/UefiPayloadPkg.fdf
 --- aa/UefiPayloadPkg/UefiPayloadPkg.fdf
 +++ bb/UefiPayloadPkg/UefiPayloadPkg.fdf
-@@ -394,6 +394,8 @@ INF MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
+@@ -394,6 +394,9 @@ INF MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
    !include RedfishPkg/Redfish.fdf.inc
    INF MdeModulePkg/Bus/Usb/UsbNetwork/NetworkCommon/NetworkCommon.inf
    INF MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcEcm/UsbCdcEcm.inf
 +  INF MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcNcm/UsbCdcNcm.inf
 +  INF MdeModulePkg/Bus/Usb/UsbNetwork/UsbRndis/UsbRndis.inf
++  INF MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcEem/UsbCdcEem.inf
    INF NucRedfishPkg/NucRedfishSyncDxe/NucRedfishSyncDxe.inf
    INF NucRedfishPkg/EthConfigDxe/EthConfigDxe.inf
  !if $(REDFISH_CLIENT) == TRUE

@@ -54,7 +54,7 @@ SRC_URI = "gitsm://github.com/tianocore/edk2.git;protocol=https;branch=master;na
 # point) and features this board is configured to use (CFR SetupMenu,
 # PRIORITIZE_INTERNAL, the BGRT logo position).
 #
-# 0019-0034: local. All are applied unconditionally; what they add is
+# 0019-0035: local. All are applied unconditionally; what they add is
 # gated by DSC defines that default FALSE, so the -D flags below decide what is
 # actually built. Making the *patches* conditional instead would be fragile --
 # 0021, 0022 and 0023 edit regions 0020 creates or sits beside.
@@ -93,6 +93,7 @@ SRC_URI += "${@' '.join('file://' + p for p in [ \
     '0032-UefiPayloadPkg-build-the-CDC-ACM-serial-console-drive.patch', \
     '0033-MdeModulePkg-add-a-USB-CDC-EEM-class-driver.patch', \
     '0034-UefiPayloadPkg-RMAP-region-manifest-for-SMMSTORE-back.patch', \
+    '0035-UefiPayloadPkg-make-FmpDxe-FV-resident.patch', \
     ])}"
 
 # The one patch that applies to edk2-redfish-client rather than edk2. Numbered
@@ -237,6 +238,8 @@ EDK2_BUILD_FLAGS = " \
     -D DISABLE_SERIAL_TERMINAL=TRUE \
     -D USE_CBMEM_FOR_CONSOLE=TRUE \
     -D VARIABLE_SUPPORT=SMMSTORE \
+    -D CAPSULE_SUPPORT=TRUE \
+    -D CAPSULE_MAIN_FW_GUID=d25f89e1-94ec-4533-80b9-7f8855ce0a94 \
     -D SECURE_BOOT_ENABLE=TRUE \
     -D SD_MMC_TIMEOUT=10000 \
     -D PS2_KEYBOARD_ENABLE=TRUE \

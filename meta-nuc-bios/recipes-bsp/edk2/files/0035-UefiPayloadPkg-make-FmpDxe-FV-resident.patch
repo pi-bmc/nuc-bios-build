@@ -1,0 +1,41 @@
+From: appkins <nbatkins@gmail.com>
+Date: Tue, 1 Sep 2026 14:30:00 -0500
+Subject: [PATCH] UefiPayloadPkg: make FmpDxe FV-resident
+
+UefiPayloadPkg builds FmpDxe under CAPSULE_SUPPORT but lists only EsrtDxe
+in the FDF, because upstream expects FmpDxe to travel inside the capsule
+as an embedded driver. This platform builds with SECURE_BOOT_ENABLE=TRUE,
+and coreboot's own Kconfig warns that an embedded driver must then be
+signed by a key the running firmware trusts or capsule processing fails.
+
+Putting FmpDxe in the firmware volume sidesteps embedded-driver signing
+entirely and matches how the RPi5 platform in this fleet does it.
+
+The FDF's FmpDxe entry must carry the same FILE_GUID override the DSC
+applies under CAPSULE_SUPPORT ($(CAPSULE_MAIN_FW_GUID)) -- a bare INF
+statement pulls in FmpDxe under its default FILE_GUID
+(78EF0A56-1CF0-4535-B5DA-F6FD2F405A11), which GenFv never generates an
+FFS for, since the DSC's <Defines> override redirects the build output to
+d25f89e1-94ec-4533-80b9-7f8855ce0a94 instead. FDF INF statements parse
+FILE_GUID as a literal registry-format GUID or a named GUID from a .dec
+file (BaseTools GenFds/FdfParser.py, _GetInfOptions -> _GetNextGuid); they
+do not expand $(...) macros at that grammar position, so the literal is
+used here, with a comment tying it back to the DSC's CAPSULE_MAIN_FW_GUID.
+
+Upstream-Status: Inappropriate [platform policy]
+
+---
+
+diff --git aa/UefiPayloadPkg/UefiPayloadPkg.fdf bb/UefiPayloadPkg/UefiPayloadPkg.fdf
+--- aa/UefiPayloadPkg/UefiPayloadPkg.fdf
++++ bb/UefiPayloadPkg/UefiPayloadPkg.fdf
+@@ -426,6 +426,9 @@
+ # Capsules
+ #
+ !if $(CAPSULE_SUPPORT) == TRUE
++# FILE_GUID must track this DSC's CAPSULE_MAIN_FW_GUID define. FDF INF
++# statements only accept a literal GUID here, not a $(...) macro.
++INF FILE_GUID = d25f89e1-94ec-4533-80b9-7f8855ce0a94 FmpDevicePkg/FmpDxe/FmpDxe.inf
+ INF MdeModulePkg/Universal/EsrtDxe/EsrtDxe.inf
+ !endif
+ 

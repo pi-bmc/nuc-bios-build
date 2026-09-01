@@ -1,0 +1,25 @@
+# coreboot ROM delivery volume (WIC kickstart).
+#
+# MBR with a single FAT32 partition whose only content is
+# coreboot-nuc5i7ryh.rom -- the shape scripts/make-rom-img.sh used to build
+# with sfdisk+mkfs.vfat. --system-id 0x0c (W95 FAT32 LBA) is what that
+# script's sfdisk wrote, and is not optional here: wic defaults MBR vfat
+# partitions to 0x6 (FAT16).
+#
+# --fixed-size 34M and the mkfs options are load-bearing: FAT32 needs >=
+# 65525 clusters to BE FAT32, and with 512-byte clusters (-s 1) that floor is
+# ~33 MiB -- 34 MiB leaves slack for the FATs and root directory while
+# keeping the image small. Supplying --mkfs-extraopts REPLACES wic's default
+# ("-S 512"), so it is restated; without "-F 32" mkdosfs would pick FAT16 at
+# this size.
+#
+# Populated from the rom-staging tree the recipe assembles and passes as the
+# default ROOTFS_DIR (WIC_CREATE_EXTRA_ARGS), same mechanism as the rpi5
+# image recipes.
+#
+# Keep the part directive on one line: wic's kickstart parser shlex-splits
+# each line and does not join backslash continuations.
+
+bootloader --ptable msdos
+
+part --source rootfs --rootfs-dir=ROOTFS_DIR --fstype=vfat --label COREBOOT --align 1024 --fixed-size 34M --system-id 0x0c --mkfs-extraopts "-S 512 -F 32 -s 1"

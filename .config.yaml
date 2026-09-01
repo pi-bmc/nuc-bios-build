@@ -56,10 +56,11 @@ local_conf_header:
     # Payload for the coreboot ROM: "edk2" (UefiPayloadPkg, default) or
     # "linuxboot" (linux-linuxboot bzImage + u-root initramfs, built here).
     NUC_BIOS_PAYLOAD = "edk2"
-    # Second multiconfig (conf/multiconfig/flasher.conf) builds a bootable
-    # intel-corei7-64 live ISO carrying flashrom + the coreboot ROM. Build it
-    # with:  kas build kas-flasher.yml   (or bitbake mc:flasher:nuc-flasher-image)
-    # BBMULTICONFIG = "flasher"
+    # Deliverable disk images (wic; not in the default target -- both need
+    # the ROM built, and the flasher additionally fetches pinned Alpine
+    # artifacts for its UKI):
+    #   kas shell .config.yaml -c 'bitbake nuc-flasher-image'  # nuc-bios-flasher.img
+    #   kas shell .config.yaml -c 'bitbake nuc-rom-image'      # coreboot-rom.img
     # Broadwell memory-init blobs (mrc.bin + refcode.elf) are extracted at
     # build time from a pinned public donor image (MrChromebox samus) by
     # default. Uncomment to supply your own pair instead, or set

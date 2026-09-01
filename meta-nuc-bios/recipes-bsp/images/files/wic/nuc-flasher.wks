@@ -1,0 +1,23 @@
+# Self-flashing BIOS updater volume (WIC kickstart).
+#
+# MBR with a single 60 MiB FAT32 EFI System Partition (--system-id 0xef, the
+# type scripts/make-flasher-img.sh's sfdisk wrote; wic would otherwise
+# default an MBR vfat partition to 0x6/FAT16) carrying the flasher UKI at
+# \EFI\BOOT\BOOTX64.EFI, the removable-media default boot path.
+#
+# 60 MiB fits the UKI (~40 MiB: Alpine kernel + initramfs + the 8 MiB ROM in
+# the overlay) with headroom for kernel growth across Alpine pin bumps.
+# Supplying --mkfs-extraopts REPLACES wic's default ("-S 512"), so it is
+# restated; "-F 32" forces FAT32, which at 60 MiB with 512-byte clusters
+# clears the 65525-cluster FAT32 floor.
+#
+# Populated from the flasher-staging tree the recipe assembles and passes as
+# the default ROOTFS_DIR (WIC_CREATE_EXTRA_ARGS), same mechanism as the rpi5
+# image recipes.
+#
+# Keep the part directive on one line: wic's kickstart parser shlex-splits
+# each line and does not join backslash continuations.
+
+bootloader --ptable msdos
+
+part --source rootfs --rootfs-dir=ROOTFS_DIR --fstype=vfat --label NUCFLASH --align 1024 --fixed-size 60M --system-id 0xef --mkfs-extraopts "-S 512 -F 32"

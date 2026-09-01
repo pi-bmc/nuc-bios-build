@@ -101,6 +101,15 @@ flashrom -p internal -r stock.rom                    # backup first!
 flashrom -p internal --ifd -i bios -w coreboot-nuc5i7ryh.rom
 ```
 
+To get the ROM onto the NUC for that, `nuc-rom-image` builds a small FAT32
+disk image carrying it, for attaching as JetKVM virtual media or dd'ing to a
+USB stick:
+
+```sh
+kas shell .config.yaml -c 'bitbake nuc-rom-image'
+# -> build/tmp/deploy/images/nuc5i7ryh/coreboot-rom.img
+```
+
 Only the 6 MiB BIOS region is written; the factory descriptor/GbE/ME regions
 stay on the 8 MiB flash (a Macronix MX25L6405, SOIC-8, not socketed). Keep
 the stock backup off-device; recovery without it needs an external SOIC-8
@@ -118,13 +127,15 @@ job unattended — attach it to the NUC as JetKVM virtual media, or dd it to a
 USB stick, and boot it:
 
 ```sh
-./scripts/make-flasher-img.sh
-# -> nuc-bios-flasher.img   (defaults: the ROM from build/tmp/deploy, repo root)
+kas shell .config.yaml -c 'bitbake nuc-flasher-image'
+# -> build/tmp/deploy/images/nuc5i7ryh/nuc-bios-flasher.img
 ```
 
-It is a single EFI unified kernel image (a stock Alpine -lts kernel plus a
-bundled static busybox, flashrom and the ROM), so it needs no multiconfig and
-no second Yocto build. On boot its init verifies the BIOS region and:
+The disk carries a single EFI unified kernel image (a stock Alpine -lts
+kernel plus a bundled static busybox, flashrom and the ROM — the
+`nuc-flasher-uki` recipe, which pins and fetches the Alpine artifacts), so it
+needs no multiconfig and no second Yocto build. On boot its init verifies the
+BIOS region and:
 
 - **already this ROM** — reboots, so leaving it attached never loops
 - **differs** — flashes the BIOS region only, then reboots

@@ -22,9 +22,9 @@ Upstream-Status: Inappropriate [platform policy]
 diff --git aa/UefiPayloadPkg/UefiPayloadPkg.dsc bb/UefiPayloadPkg/UefiPayloadPkg.dsc
 --- aa/UefiPayloadPkg/UefiPayloadPkg.dsc
 +++ bb/UefiPayloadPkg/UefiPayloadPkg.dsc
-@@ -1102,6 +1102,11 @@
-   MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcNcm/UsbCdcNcm.inf
+@@ -1104,6 +1104,11 @@
    MdeModulePkg/Bus/Usb/UsbNetwork/UsbRndis/UsbRndis.inf
+   MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcEem/UsbCdcEem.inf
    #
 +  # The BMC's CDC-ACM serial console. Independent of the NIC above: the
 +  # console is a convenience, the NIC is the Redfish host interface.
@@ -37,9 +37,10 @@ diff --git aa/UefiPayloadPkg/UefiPayloadPkg.dsc bb/UefiPayloadPkg/UefiPayloadPkg
 diff --git aa/UefiPayloadPkg/UefiPayloadPkg.fdf bb/UefiPayloadPkg/UefiPayloadPkg.fdf
 --- aa/UefiPayloadPkg/UefiPayloadPkg.fdf
 +++ bb/UefiPayloadPkg/UefiPayloadPkg.fdf
-@@ -396,5 +396,6 @@ INF MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
+@@ -397,6 +397,7 @@
    INF MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcNcm/UsbCdcNcm.inf
    INF MdeModulePkg/Bus/Usb/UsbNetwork/UsbRndis/UsbRndis.inf
+   INF MdeModulePkg/Bus/Usb/UsbNetwork/UsbCdcEem/UsbCdcEem.inf
 +  INF NucRedfishPkg/UsbCdcAcmDxe/UsbCdcAcmDxe.inf
    INF NucRedfishPkg/NucRedfishSyncDxe/NucRedfishSyncDxe.inf
    INF NucRedfishPkg/EthConfigDxe/EthConfigDxe.inf

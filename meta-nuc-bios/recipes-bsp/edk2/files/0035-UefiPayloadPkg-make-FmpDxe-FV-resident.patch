@@ -1,6 +1,6 @@
 From: appkins <nbatkins@gmail.com>
 Date: Tue, 1 Sep 2026 14:30:00 -0500
-Subject: [PATCH] UefiPayloadPkg: make FmpDxe FV-resident
+Subject: [PATCH] UefiPayloadPkg: make FmpDxe FV-resident, scan capsules from BdsDxe
 
 UefiPayloadPkg builds FmpDxe under CAPSULE_SUPPORT but lists only EsrtDxe
 in the FDF, because upstream expects FmpDxe to travel inside the capsule
@@ -22,6 +22,13 @@ file (BaseTools GenFds/FdfParser.py, _GetInfOptions -> _GetNextGuid); they
 do not expand $(...) macros at that grammar position, so the literal is
 used here, with a comment tying it back to the DSC's CAPSULE_MAIN_FW_GUID.
 
+FmpDxe alone only makes SetImage() reachable; something still has to call
+it once a capsule is staged. This payload has no PEI phase for upstream
+Capsule-on-Disk to run in and no console app to boot into like the RPi5
+fleet's Rpi5CapsuleApp, so NucCapsuleOnDiskLib -- NULL-linked into BdsDxe
+here -- scans \EFI\UpdateCapsule at ReadyToBoot and applies whatever it
+finds via gRT->UpdateCapsule(), on every ordinary boot.
+
 Upstream-Status: Inappropriate [platform policy]
 
 ---
@@ -39,3 +46,18 @@ diff --git aa/UefiPayloadPkg/UefiPayloadPkg.fdf bb/UefiPayloadPkg/UefiPayloadPkg
  INF MdeModulePkg/Universal/EsrtDxe/EsrtDxe.inf
  !endif
  
+diff --git aa/UefiPayloadPkg/UefiPayloadPkg.dsc bb/UefiPayloadPkg/UefiPayloadPkg.dsc
+--- aa/UefiPayloadPkg/UefiPayloadPkg.dsc
++++ bb/UefiPayloadPkg/UefiPayloadPkg.dsc
+@@ -1189,7 +1189,10 @@
+   SecurityPkg/VariableAuthenticated/SecureBootConfigDxe/SecureBootConfigDxe.inf
+ !endif
+ 
+-  MdeModulePkg/Universal/BdsDxe/BdsDxe.inf
++  MdeModulePkg/Universal/BdsDxe/BdsDxe.inf {
++    <LibraryClasses>
++      NULL|NucRedfishPkg/Library/NucCapsuleOnDiskLib/NucCapsuleOnDiskLib.inf
++  }
+ !if $(BOOTSPLASH_IMAGE)
+   MdeModulePkg/Logo/LogoDxe.inf
+ !endif

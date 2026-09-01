@@ -76,6 +76,9 @@
   # For the standalone USB-network transport drivers.
   UefiUsbLib|MdePkg/Library/UefiUsbLib/UefiUsbLib.inf
 
+  # For NucCapsuleOnDiskLib's drop-box directory scan.
+  FileHandleLib|MdePkg/Library/UefiFileHandleLib/UefiFileHandleLib.inf
+
   # Default SortLib (RedfishRestExDxe/RedfishDiscoverDxe override to BaseSortLib
   # per-component below).
   SortLib|MdeModulePkg/Library/UefiSortLib/UefiSortLib.inf
@@ -183,6 +186,13 @@
   # above for the class 0x0A data interface they share a device with.
   #
   NucRedfishPkg/UsbCdcAcmDxe/UsbCdcAcmDxe.inf
+
+  #
+  # Boot-time \EFI\UpdateCapsule scanner. Listed here only so `build -m`
+  # can resolve its library/PCD closure against this DSC; the real
+  # firmware NULL-links it into UefiPayloadPkg's BdsDxe (patch 0035).
+  #
+  NucRedfishPkg/Library/NucCapsuleOnDiskLib/NucCapsuleOnDiskLib.inf
 
   #
   # ---- Our platform glue ----

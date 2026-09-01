@@ -1,0 +1,52 @@
+## @file
+#  Boot-time \EFI\UpdateCapsule scanner for the NUC payload: applies staged
+#  FMP capsules at ReadyToBoot, synchronously, from any attached volume --
+#  including the USB mass-storage LUN the BMC's gadget exposes. Linked NULL
+#  into BdsDxe. The platform's substitute for upstream Capsule-on-Disk,
+#  which needs a PEI phase a payload does not have.
+#
+#  Copyright (c) 2026, the pi-bmc contributors.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION    = 0x0001001A
+  BASE_NAME      = NucCapsuleOnDiskLib
+  FILE_GUID      = 9f2c4e77-3ab1-4d58-9c60-1e83d5a24b0f
+  MODULE_TYPE    = DXE_DRIVER
+  VERSION_STRING = 1.0
+  LIBRARY_CLASS  = NULL|DXE_DRIVER
+  CONSTRUCTOR    = NucCapsuleOnDiskLibConstructor
+
+[Sources]
+  NucCapsuleOnDiskLib.c
+  NucCapsuleParse.c
+  NucCapsuleParse.h
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  NucRedfishPkg/NucRedfishPkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  FileHandleLib
+  MemoryAllocationLib
+  PcdLib
+  UefiBootServicesTableLib
+  UefiLib
+  UefiRuntimeServicesTableLib
+
+[Protocols]
+  gEfiFirmwareManagementProtocolGuid  ## CONSUMES
+  gEfiSimpleFileSystemProtocolGuid    ## CONSUMES
+  gEfiUsb2HcProtocolGuid              ## CONSUMES
+  gEfiUsbIoProtocolGuid               ## CONSUMES
+
+[Guids]
+  gEfiEventReadyToBootGuid  ## CONSUMES ## Event
+  gEfiFileInfoGuid          ## CONSUMES
+  gEfiFmpCapsuleGuid        ## CONSUMES
+  gEfiGlobalVariableGuid    ## SOMETIMES_PRODUCES ## Variable:L"OsIndicationsSupported"

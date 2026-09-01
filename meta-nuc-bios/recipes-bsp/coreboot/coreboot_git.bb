@@ -190,6 +190,37 @@ do_configure() {
             bbfatal "no UEFIPAYLOAD.fd in ${DEPLOY_DIR_IMAGE} -- build edk2-uefipayload first"
         sed -e "s#@UEFIPAYLOAD@#${DEPLOY_DIR_IMAGE}/UEFIPAYLOAD.fd#" \
             ${WORKDIR}/payload-edk2.config >> ${B}/.config
+
+        # --- firmware GUID drift guard ----------------------------------
+        # This recipe holds two of the six hand-maintained copies of the
+        # firmware image GUID: NUC_CAPSULE_GUID (which do_deploy passes to
+        # GenerateCapsule as --guid) and CONFIG_DRIVERS_EFI_MAIN_FW_GUID in
+        # payload-edk2.config (which coreboot writes into the ESRT). Neither
+        # fails loudly when wrong -- the capsule simply matches no FMP at
+        # runtime, or the ESRT advertises a device nothing updates. Check
+        # them against each other, and against the finished payload: the
+        # FmpDxe FFS this GUID names is in UEFIPAYLOAD.fd as 16 raw bytes,
+        # so this also pins edk2-uefipayload's own NUC_CAPSULE_GUID and
+        # patch 0035's INF FILE_GUID line end to end.
+        python3 - "${NUC_CAPSULE_GUID}" "${WORKDIR}/payload-edk2.config" \
+            "${DEPLOY_DIR_IMAGE}/UEFIPAYLOAD.fd" <<'GUIDCHECK'
+import re, sys, uuid
+guid, cfg, fd = sys.argv[1], sys.argv[2], sys.argv[3]
+g = uuid.UUID(guid)
+m = re.search(r'^CONFIG_DRIVERS_EFI_MAIN_FW_GUID="([^"]*)"',
+              open(cfg, encoding="utf-8").read(), re.M)
+if m is None:
+    sys.exit("%s sets no CONFIG_DRIVERS_EFI_MAIN_FW_GUID -- coreboot would "
+             "publish no ESRT entry for the firmware NUC_CAPSULE_GUID names." % cfg)
+if m.group(1).lower() != str(g):
+    sys.exit("NUC_CAPSULE_GUID drift: NUC_CAPSULE_GUID is %s but %s says %s."
+             % (g, cfg, m.group(1)))
+if open(fd, "rb").read().count(g.bytes_le) == 0:
+    sys.exit("NUC_CAPSULE_GUID drift: %s carries no FMP image with GUID %s. "
+             "edk2-uefipayload's own NUC_CAPSULE_GUID and the INF FILE_GUID "
+             "line in 0035-UefiPayloadPkg-make-FmpDxe-FV-resident.patch must "
+             "name the same value as this recipe's." % (fd, g))
+GUIDCHECK
     fi
     # The port expects the blobs under 3rdparty/blobs/mainboard/<board>/
     # (the HAVE_MRC/HAVE_REFCODE_BLOB default paths).

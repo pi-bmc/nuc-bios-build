@@ -52,10 +52,34 @@
   capsule it hands to SetImage() and only records the outcome -- so the
   proof has to come from asking the FMP itself: locate the instance whose
   ImageTypeId matches this platform's single firmware image, and read
-  back LastAttemptStatus. Only LAST_ATTEMPT_STATUS_SUCCESS counts as
-  applied; anything else, including "could not find or read the FMP at
-  all", leaves the capsule staged rather than risk reporting an apply
-  that never happened.
+  back its last-attempt record.
+
+  A bare LastAttemptStatus of 0 is NOT that proof, and treating it as one
+  re-enters the very trap the paragraph above describes through the value
+  that replaced UpdateCapsule()'s return code. FmpDevicePkg's
+  DEFAULT_LASTATTEMPTSTATUS and DEFAULT_LASTATTEMPTVERSION are both 0x0;
+  GetLastAttemptStatusFromFmpControllerState() returns that default
+  whenever the FMP controller-state variable is missing or unreadable,
+  and SetLastAttemptStatusInVariable() returns without recording anything
+  when GetFmpControllerState() is NULL. With variable services
+  unavailable -- a full or corrupt SMMSTORE -- a FAILED write therefore
+  reads back exactly like a successful one. So the scanner snapshots the
+  pair (LastAttemptVersion, LastAttemptStatus) immediately BEFORE
+  UpdateCapsule() and requires it to have CHANGED, to a non-zero version
+  with LAST_ATTEMPT_STATUS_SUCCESS, before calling anything applied.
+  Anything else -- including "could not find or read the FMP at all" --
+  leaves the capsule staged rather than risk reporting an apply that
+  never happened.
+
+  Why the version gate in front of all that: FmpDxe compares an incoming
+  image only against the LOWEST SUPPORTED version, never the running one,
+  so it re-applies identical bytes without complaint. Since every apply
+  here ends in a cold reset, an undeletable capsule -- read-only media,
+  or a delete that failed -- would be re-applied and reset on every boot,
+  forever. The scanner therefore reads the capsule's own FMP payload
+  header, skips anything already running, and additionally refuses to
+  report as applied (and so to reset for) any capsule that is still on
+  the volume when the write finishes.
 
   Copyright (c) 2026, the pi-bmc contributors.
 
@@ -522,8 +546,13 @@ ReportLastAttempt (
   @param[in] Dir   Open handle on \EFI\UpdateCapsule.
   @param[in] Name  File name within Dir.
 
-  @retval TRUE   The capsule was applied (and the file deleted).
-  @retval FALSE  It was not; the file is left in place.
+  @retval TRUE   The capsule was applied, the FMP's last-attempt record
+                 proves it, and the file is gone. Only this answer may
+                 lead to the caller's cold reset.
+  @retval FALSE  Anything else: not applied, not provably applied, or
+                 applied but still on the volume -- in every one of those
+                 cases resetting would risk a boot loop or a false
+                 "applied" report to the BMC.
 **/
 STATIC
 BOOLEAN
@@ -541,7 +570,14 @@ ApplyOneCapsule (
   EFI_CAPSULE_HEADER  *HeaderArray[1];
   UINTN               ImageSize;
   UINT32              CapsuleFlags;
+  UINT32              CapsuleVersion;
+  BOOLEAN             HaveCapsuleVersion;
+  BOOLEAN             HaveBefore;
+  UINT32              BeforeStatus;
+  UINT32              BeforeVersion;
+  UINT32              RunningVersion;
   UINT32              LastStatus;
+  UINT32              LastVersion;
 
   //
   // Read-write so a successful apply can delete the file; a physically
@@ -610,6 +646,67 @@ ApplyOneCapsule (
     return FALSE;
   }
 
+  //
+  // Version gate, and the pre-apply snapshot of the FMP's last-attempt
+  // record, both come from one look at the FMP descriptor.
+  //
+  // The gate is a LOOP BREAKER, not anti-downgrade policy: FmpDxe compares
+  // an incoming image only against the LOWEST SUPPORTED version, never
+  // against the RUNNING one, so it will cheerfully rewrite the bytes
+  // already in SPI and report success. Every success here ends in
+  // gRT->ResetSystem (EfiResetCold), so a capsule that cannot be deleted
+  // afterwards -- read-only media, or a delete that fails -- would be
+  // re-applied and cold-reset on every boot, forever, on media the BMC
+  // controls and with no console to intervene from.
+  //
+  CapsuleVersion     = 0;
+  RunningVersion     = 0;
+  BeforeStatus       = 0;
+  BeforeVersion      = 0;
+  HaveCapsuleVersion = NucCapsuleGetPayloadVersion ((CONST UINT8 *)Capsule, (UINTN)FileSize, &CapsuleVersion);
+  HaveBefore         = GetFmpLastAttemptStatus (&BeforeStatus, &BeforeVersion, &RunningVersion);
+
+  if (HaveCapsuleVersion && HaveBefore) {
+    Print (
+      L"NucCapsuleOnDisk: %s carries version %u; running firmware is %u\n",
+      Name,
+      CapsuleVersion,
+      RunningVersion
+      );
+
+    if (CapsuleVersion == RunningVersion) {
+      //
+      // Already running these bytes. Consume the file where the media
+      // allows it, so the BMC stops seeing an update as pending; where it
+      // does not, simply skipping is what breaks the reset loop.
+      //
+      Print (L"NucCapsuleOnDisk: %s is the running version already, skipping\n", Name);
+      if (CanDelete) {
+        //
+        // EFI_FILE_PROTOCOL.Delete() releases the handle whatever it
+        // returns, so this must not be followed by a close.
+        //
+        Status = FileHandleDelete (File);
+        if (Status == EFI_SUCCESS) {
+          Print (L"NucCapsuleOnDisk:   removed the already-applied capsule\n");
+        } else {
+          Print (L"NucCapsuleOnDisk:   warning: could not remove it: %r\n", Status);
+        }
+      } else {
+        FileHandleClose (File);
+      }
+
+      FreePool (Capsule);
+      return FALSE;
+    }
+
+    if (CapsuleVersion < RunningVersion) {
+      Print (L"NucCapsuleOnDisk: *** DOWNGRADING from %u to %u ***\n", RunningVersion, CapsuleVersion);
+    }
+  } else {
+    Print (L"NucCapsuleOnDisk: warning: cannot compare versions; applying blind\n");
+  }
+
   Print (
     L"NucCapsuleOnDisk: applying %s (%u bytes, flags 0x%x, %g)...\n",
     Name,
@@ -637,18 +734,19 @@ ApplyOneCapsule (
   //
   // UpdateCapsule() success means "processed", never "applied" --
   // upstream records the SetImage status and returns success either
-  // way. See the file header for why the FMP's own LastAttemptStatus,
+  // way. See the file header for why the FMP's own last-attempt record,
   // not a re-read of a firmware file, is the only proof this platform
-  // can get.
+  // can get -- and why a bare LastAttemptStatus of 0 is not that proof.
   //
-  if (!GetFmpLastAttemptStatus (&LastStatus, NULL, NULL)) {
+  if (!GetFmpLastAttemptStatus (&LastStatus, &LastVersion, NULL)) {
     Print (L"NucCapsuleOnDisk: %s: could not read back the FMP's LastAttemptStatus; leaving the file staged\n", Name);
     FileHandleClose (File);
     return FALSE;
   }
 
   Print (
-    L"NucCapsuleOnDisk:   FMP LastAttemptStatus: %u (%s)\n",
+    L"NucCapsuleOnDisk:   FMP recorded: LastAttemptVersion %u, LastAttemptStatus %u (%s)\n",
+    LastVersion,
     LastStatus,
     LastAttemptStatusName (LastStatus)
     );
@@ -659,21 +757,82 @@ ApplyOneCapsule (
     return FALSE;
   }
 
-  Print (L"NucCapsuleOnDisk: %s applied, confirmed by the FMP's LastAttemptStatus\n", Name);
-
-  if (CanDelete) {
-    //
-    // Deleting the consumed capsule is the applied-vs-pending signal
-    // the BMC reads back from the volume. FileHandleDelete releases the
-    // handle whatever it returns.
-    //
-    Status = FileHandleDelete (File);
-    if (EFI_ERROR (Status)) {
-      Print (L"NucCapsuleOnDisk: warning: could not delete %s: %r\n", Name, Status);
-    }
-  } else {
-    Print (L"NucCapsuleOnDisk: warning: %s is on read-only media, left in place\n", Name);
+  //
+  // Success is only success if something was actually RECORDED. Both
+  // fields default to 0 (FmpDevicePkg's DEFAULT_LASTATTEMPTSTATUS and
+  // DEFAULT_LASTATTEMPTVERSION), GetLastAttemptStatusFromFmpControllerState()
+  // hands back that default whenever the FMP controller-state variable is
+  // missing or unreadable, and SetLastAttemptStatusInVariable() returns
+  // WITHOUT recording anything when GetFmpControllerState() is NULL. So
+  // with variable services unavailable -- a full or corrupt SMMSTORE, or
+  // an FmpDeviceSmmLib fallback with stubbed variable services -- a SPI
+  // write that FAILED leaves exactly the same all-zero record a caller
+  // would otherwise read as "applied", and the scanner would delete the
+  // capsule and cold-reset on an update that never happened.
+  //
+  // Two independent guards. FmpDxe writes LastAttemptVersion =
+  // IncomingFwVersion BEFORE the status, so a non-default version proves
+  // the record was written at all; and the record must have CHANGED from
+  // the snapshot taken just before UpdateCapsule(), which proves it was
+  // written by THIS attempt. Anything else leaves the capsule staged.
+  //
+  if (LastVersion == 0) {
+    Print (
+      L"NucCapsuleOnDisk: %s NOT applied: the FMP reports LastAttemptVersion 0, FmpDevicePkg's \"nothing recorded\" default -- the status of 0 beside it is that same default, not proof of a write. Leaving the file staged.\n",
+      Name
+      );
     FileHandleClose (File);
+    return FALSE;
+  }
+
+  if (HaveBefore && (LastVersion == BeforeVersion) && (LastStatus == BeforeStatus)) {
+    Print (
+      L"NucCapsuleOnDisk: %s NOT applied: the FMP's last-attempt record is unchanged (version %u, status %u) -- SetImage() recorded nothing, so there is no evidence the SPI write happened. Leaving the file staged.\n",
+      Name,
+      LastVersion,
+      LastStatus
+      );
+    FileHandleClose (File);
+    return FALSE;
+  }
+
+  Print (L"NucCapsuleOnDisk: %s applied, confirmed by the FMP's last-attempt record\n", Name);
+
+  //
+  // Only a capsule that is GONE may be reported as applied: the caller
+  // cold-resets on any success, and a capsule still sitting in the drop
+  // box would be found, re-applied and cold-reset again next boot. The
+  // version gate above is the real loop breaker; this is its backstop for
+  // the boot in which the write happened.
+  //
+  if (!CanDelete) {
+    Print (
+      L"NucCapsuleOnDisk: %s is on read-only media and cannot be consumed -- the firmware WAS written, but not resetting into it: the capsule is still staged. Power-cycle to run it; the version gate skips it from then on.\n",
+      Name
+      );
+    FileHandleClose (File);
+    return FALSE;
+  }
+
+  //
+  // Deleting the consumed capsule is the applied-vs-pending signal
+  // the BMC reads back from the volume. FileHandleDelete releases the
+  // handle whatever it returns, so no close follows it.
+  //
+  // Tested against EFI_SUCCESS, not with EFI_ERROR(): the spec's own
+  // answer for "handle closed, file still there" is
+  // EFI_WARNING_DELETE_FAILURE, a WARNING, which EFI_ERROR() reports as
+  // no error at all. Accepting it would leave the capsule on the volume
+  // and cold-reset into it -- the exact loop this guard exists to stop.
+  //
+  Status = FileHandleDelete (File);
+  if (Status != EFI_SUCCESS) {
+    Print (
+      L"NucCapsuleOnDisk: %s: the firmware WAS written but the capsule could not be deleted: %r -- not resetting into it, or the same capsule would be re-applied every boot. Power-cycle to run it; the version gate skips it from then on.\n",
+      Name,
+      Status
+      );
+    return FALSE;
   }
 
   return TRUE;
@@ -683,8 +842,10 @@ ApplyOneCapsule (
   Apply every capsule in one volume's drop box.
 
   @param[in]     Root     Open root directory of the volume.
-  @param[in,out] Applied  Incremented per capsule applied.
-  @param[in,out] Failed   Incremented per capsule left in place.
+  @param[in,out] Applied  Incremented per capsule provably applied AND
+                          removed from the volume -- the only outcome that
+                          may trigger the caller's cold reset.
+  @param[in,out] Failed   Incremented for every other outcome.
 **/
 STATIC
 VOID
@@ -824,8 +985,13 @@ OnReadyToBoot (
   FreePool (Handles);
   ClearFileCapsuleIndication ();
 
+  //
+  // "applied and consumed": a capsule that was written but could not be
+  // deleted, or that was skipped because it is already running, counts
+  // with the rest -- neither may lead to the cold reset below.
+  //
   Print (
-    L"NucCapsuleOnDisk: %d of %d capsule(s) applied\n",
+    L"NucCapsuleOnDisk: %d of %d capsule(s) applied and consumed\n",
     (UINT32)Applied,
     (UINT32)(Applied + Failed)
     );

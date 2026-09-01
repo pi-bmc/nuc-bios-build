@@ -428,6 +428,41 @@ do_configure() {
     rm -rf ${S}/NucRedfishPkg
     cp -a ${WORKDIR}/NucRedfishPkg ${S}/NucRedfishPkg
 
+    # --- firmware GUID drift guard -------------------------------------------
+    # NUC_CAPSULE_GUID is hand-written into six places and cannot be factored
+    # out: FDF INF statements do not expand $(...) macros, so patch 0035's
+    # `INF FILE_GUID = ...` line has to spell it. Drift can still be caught.
+    # A wrong FDF GUID fails loudly at GenFv, but a wrong GUID in either C
+    # source fails SILENTLY -- the scanner and the Redfish inventory would look
+    # up an FMP instance that does not exist and read "could not find the FMP"
+    # as a verdict on a capsule that was in fact applied. Compare the staged
+    # sources and the patched FDF against the one variable the build uses,
+    # here, where all three are on disk and it is in scope. (coreboot_git.bb
+    # guards its own two copies the same way, against the finished payload.)
+    python3 - "${NUC_CAPSULE_GUID}" \
+        "${S}/NucRedfishPkg/Library/NucCapsuleOnDiskLib/NucCapsuleOnDiskLib.c" \
+        "${S}/NucRedfishPkg/NucRedfishSyncDxe/NucRedfishInventory.c" \
+        "${S}/UefiPayloadPkg/UefiPayloadPkg.fdf" <<'GUIDCHECK'
+import sys, uuid
+g = uuid.UUID(sys.argv[1])
+c = ("0x%08x,0x%04x,0x%04x,{%s}" % (g.fields[0], g.fields[1], g.fields[2],
+     ",".join("0x%02x" % b for b in g.bytes[8:])))
+bad = []
+for path in sys.argv[2:]:
+    text = "".join(open(path, "rb").read().decode("utf-8", "replace").lower().split())
+    needle = (c if path.endswith(".c") else str(g)).replace(" ", "")
+    if needle not in text:
+        bad.append("%s does not carry %s" % (path, needle))
+if bad:
+    sys.exit("NUC_CAPSULE_GUID drift: " + "; ".join(bad) + ".\n"
+             "Every copy of the firmware image GUID must hold the same value: "
+             "NUC_CAPSULE_GUID here and in coreboot_git.bb, "
+             "CONFIG_DRIVERS_EFI_MAIN_FW_GUID in payload-edk2.config, the "
+             "INF FILE_GUID line in "
+             "0035-UefiPayloadPkg-make-FmpDxe-FV-resident.patch, and the two "
+             "C literals above.")
+GUIDCHECK
+
     # --- bootsplash (coreboot's 'logo' target) -------------------------------
     # A .bmp is installed verbatim: the layer default is already the
     # uncompressed BMP3 LogoDxe needs, so the default build has no ImageMagick

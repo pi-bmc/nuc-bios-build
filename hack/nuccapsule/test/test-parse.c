@@ -67,6 +67,64 @@ static void TestRejectsHeaderSizePastImageSize (void)
          "CapsuleImageSize smaller than HeaderSize is refused");
 }
 
+// FMP_PAYLOAD_HEADER as GenerateCapsule.py --fw-version writes it:
+// Signature 'MSS1', HeaderSize, FwVersion, LowestSupportedVersion.
+static void BuildPayloadHeader (UINT8 *At, UINT32 HeaderSize, UINT32 FwVersion)
+{
+  UINT32 Sig = 0x3153534DU;   // 'M','S','S','1' little-endian
+  UINT32 Lsv = 1;
+  memcpy (At + 0, &Sig, 4);
+  memcpy (At + 4, &HeaderSize, 4);
+  memcpy (At + 8, &FwVersion, 4);
+  memcpy (At + 12, &Lsv, 4);
+}
+
+static void TestFindsPayloadVersion (void)
+{
+  UINT8 Buf[256]; UINT32 Version = 0xDEAD;
+  memset (Buf, 0xAA, sizeof (Buf));
+  // Sitting behind the capsule/FMP/auth headers, at an offset the parser
+  // has to search for -- its position depends on the signature size.
+  BuildPayloadHeader (Buf + 96, 16, 7);
+  CHECK (NucCapsuleGetPayloadVersion (Buf, sizeof (Buf), &Version) == TRUE,
+         "the FMP payload header is found behind the auth blob");
+  CHECK (Version == 7, "FwVersion is read out of it");
+}
+
+static void TestNoPayloadHeaderIsNotAVersion (void)
+{
+  UINT8 Buf[256]; UINT32 Version = 0xDEAD;
+  memset (Buf, 0xAA, sizeof (Buf));
+  // No header means the caller must NOT compare versions -- reporting a
+  // bogus 0 here would make the loop-breaker gate skip a real update.
+  CHECK (NucCapsuleGetPayloadVersion (Buf, sizeof (Buf), &Version) == FALSE,
+         "a capsule with no payload header yields no version");
+  CHECK (Version == 0xDEAD, "the out parameter is left alone on failure");
+}
+
+static void TestRejectsImplausiblePayloadHeaderSize (void)
+{
+  UINT8 Buf[256]; UINT32 Version = 0xDEAD;
+  memset (Buf, 0xAA, sizeof (Buf));
+  BuildPayloadHeader (Buf + 96, 8, 7);          // HeaderSize below the struct
+  CHECK (NucCapsuleGetPayloadVersion (Buf, sizeof (Buf), &Version) == FALSE,
+         "a HeaderSize smaller than the header itself is not a match");
+  memset (Buf, 0xAA, sizeof (Buf));
+  BuildPayloadHeader (Buf + 96, 200, 7);        // header runs past the buffer
+  CHECK (NucCapsuleGetPayloadVersion (Buf, sizeof (Buf), &Version) == FALSE,
+         "a HeaderSize running past the end of the capsule is not a match");
+}
+
+static void TestPayloadVersionZeroIsReported (void)
+{
+  UINT8 Buf[256]; UINT32 Version = 0xDEAD;
+  memset (Buf, 0xAA, sizeof (Buf));
+  BuildPayloadHeader (Buf + 32, 16, 0);
+  CHECK (NucCapsuleGetPayloadVersion (Buf, sizeof (Buf), &Version) == TRUE,
+         "version 0 is a real version, distinguished by the TRUE return");
+  CHECK (Version == 0, "and it is reported as 0");
+}
+
 static void TestIdentifiesFmpGuid (void)
 {
   CHECK (NucCapsuleIsFmpCapsule (&FmpGuid) == TRUE, "FMP GUID recognised");
@@ -91,6 +149,10 @@ int main (void)
   TestRejectsImageSizeBeyondFile ();
   TestRejectsHeaderSizePastImageSize ();
   TestIdentifiesFmpGuid ();
+  TestFindsPayloadVersion ();
+  TestNoPayloadHeaderIsNotAVersion ();
+  TestRejectsImplausiblePayloadHeaderSize ();
+  TestPayloadVersionZeroIsReported ();
   TestFileFiltering ();
   if (Failures) { printf ("%d check(s) failed\n", Failures); return 1; }
   printf ("all NUC capsule parse checks passed\n");

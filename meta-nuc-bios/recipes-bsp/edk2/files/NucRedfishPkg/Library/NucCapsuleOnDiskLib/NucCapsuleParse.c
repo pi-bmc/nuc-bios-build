@@ -24,6 +24,22 @@ STATIC CONST EFI_GUID  mFmpCapsuleGuid = {
 #define CAPSULE_OFF_IMAGE_SIZE   24
 #define CAPSULE_MIN_HEADER       28
 
+//
+// FMP_PAYLOAD_HEADER, as BaseTools' GenerateCapsule.py --fw-version emits it
+// and FmpDevicePkg's FmpPayloadHeaderLib reads it back:
+//
+//   UINT32 Signature; UINT32 HeaderSize; UINT32 FwVersion; UINT32 Lsv;
+//
+// Signature is SIGNATURE_32 ('M','S','S','1'). Its offset inside the capsule
+// depends on the size of the authentication blob in front of it, so it is
+// searched for rather than computed -- within a bound, so a stray four bytes
+// deep inside an 8 MiB firmware image can never be mistaken for it.
+//
+#define FMP_PAYLOAD_SIGNATURE     0x3153534DU
+#define FMP_PAYLOAD_MIN_HEADER    16
+#define FMP_PAYLOAD_MAX_HEADER    4096
+#define FMP_PAYLOAD_SEARCH_LIMIT  (64 * 1024)
+
 STATIC
 UINT32
 ReadLe32 (
@@ -119,6 +135,43 @@ NucCapsuleValidateHeader (
   *Flags     = CapsuleFlags;
 
   return EFI_SUCCESS;
+}
+
+BOOLEAN
+NucCapsuleGetPayloadVersion (
+  IN  CONST UINT8  *Buf,
+  IN  UINTN        Len,
+  OUT UINT32       *FwVersion
+  )
+{
+  UINTN   Offset;
+  UINTN   Limit;
+  UINT32  HeaderSize;
+
+  if ((Buf == NULL) || (FwVersion == NULL) || (Len < FMP_PAYLOAD_MIN_HEADER)) {
+    return FALSE;
+  }
+
+  Limit = (Len < FMP_PAYLOAD_SEARCH_LIMIT) ? Len : FMP_PAYLOAD_SEARCH_LIMIT;
+
+  for (Offset = 0; Offset + FMP_PAYLOAD_MIN_HEADER <= Limit; Offset++) {
+    if (ReadLe32 (Buf + Offset) != FMP_PAYLOAD_SIGNATURE) {
+      continue;
+    }
+
+    HeaderSize = ReadLe32 (Buf + Offset + 4);
+    if ((HeaderSize < FMP_PAYLOAD_MIN_HEADER) ||
+        (HeaderSize >= FMP_PAYLOAD_MAX_HEADER) ||
+        (Offset + (UINTN)HeaderSize >= Len))
+    {
+      continue;
+    }
+
+    *FwVersion = ReadLe32 (Buf + Offset + 8);
+    return TRUE;
+  }
+
+  return FALSE;
 }
 
 BOOLEAN

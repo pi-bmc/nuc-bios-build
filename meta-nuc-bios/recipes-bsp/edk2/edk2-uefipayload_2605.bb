@@ -489,24 +489,104 @@ do_configure() {
     # block (UefiPayloadPkg.dsc) in place, rather than appending a
     # platform-wide override at end of file: a module-scoped PCD override
     # wins over a platform [PcdsFixedAtBuild.common] one, so appending would
-    # silently leave the test certificate in effect. sed's insert-then-
-    # delete keeps the replacement inside the same component block. The
-    # grep guard makes this idempotent across repeated do_configure runs --
-    # ${S} persists across builds, and running it twice must not fail
-    # trying to match a line that is no longer there.
+    # silently leave the test certificate in effect.
+    #
+    # This used to be a two-command sed (`r` the rendered PCD in, then `d`
+    # the !include line) and it corrupted the DSC: BinToPcd's output file
+    # carries no trailing newline, so sed's `r` spliced the very next line
+    # -- the block's `<LibraryClasses>` header -- onto the end of the
+    # inserted PCD text instead of leaving it on its own line. The DSC
+    # parser, still inside <PcdsFixedAtBuild> with no section header in
+    # sight, read the next real line (`FmpDeviceLib|...`) as a malformed
+    # PCD assignment and failed with "No token space GUID or PCD name
+    # specified" -- no C code involved, nothing compiled. Doing this in
+    # Python on the raw bytes instead makes the substitution touch only the
+    # one matched line's own text, and leaves every surrounding \r\n
+    # (the DSC's line ending throughout) exactly as it was.
+    #
+    # The structural check below is unconditional, not just gated on the
+    # substitution having just run: a tree already left corrupted by an
+    # earlier, buggy version of this same step (test_include already gone,
+    # so the substitution silently has nothing to do) must still be caught
+    # here, not passed through to GenFv. A silent structural edit to a
+    # generated file is exactly how the corruption above got through once
+    # already.
     dsc="${S}/UefiPayloadPkg/UefiPayloadPkg.dsc"
-    test_include='!include BaseTools/Source/Python/Pkcs7Sign/TestRoot.cer.gFmpDevicePkgTokenSpaceGuid.PcdFmpDevicePkcs7CertBufferXdr.inc'
-    if grep -qF "$test_include" "$dsc"; then
-        sed -i "\\|$test_include|r ${cert_pcd}" "$dsc"
-        sed -i "\\|$test_include|d" "$dsc"
-    fi
+    python3 - "$dsc" "$cert_pcd" <<'PY'
+import sys
 
-    # Belt and braces, because the failure above is invisible from the
-    # board: the assignment must be in the DSC and must carry bytes, or
-    # FmpDxe has no key to authenticate against and no capsule can ever be
-    # applied.
-    grep -q 'PcdFmpDevicePkcs7CertBufferXdr|{0x' "$dsc" || \
-        bbfatal "the capsule signing certificate did not reach $dsc"
+TEST_INCLUDE = b'!include BaseTools/Source/Python/Pkcs7Sign/TestRoot.cer.gFmpDevicePkgTokenSpaceGuid.PcdFmpDevicePkcs7CertBufferXdr.inc'
+COMPONENT_START = b'FmpDevicePkg/FmpDxe/FmpDxe.inf {'
+LIB_CLASSES = b'<LibraryClasses>'
+FMP_DEVICE_LIB = b'FmpDeviceLib|UefiPayloadPkg/Library/FmpDeviceSmmLib/FmpDeviceSmmLib.inf'
+PCD_MARKER = b'PcdFmpDevicePkcs7CertBufferXdr|{0x'
+
+def fail(msg):
+    sys.stderr.write(msg + "\n")
+    sys.exit(1)
+
+dsc_path, cert_pcd_path = sys.argv[1], sys.argv[2]
+
+with open(dsc_path, 'rb') as f:
+    raw = f.read()
+
+if b'\r\n' not in raw:
+    fail("{}: no CRLF line endings found -- refusing to edit a file whose convention I cannot confirm".format(dsc_path))
+
+lines = raw.split(b'\r\n')
+
+with open(cert_pcd_path, 'rb') as f:
+    pcd_line = f.read().strip(b'\r\n')
+if b'\n' in pcd_line or b'\r' in pcd_line:
+    fail("{}: contains an embedded line break -- BinToPcd's output format changed; this replacement assumes exactly one physical line".format(cert_pcd_path))
+
+# Strict single-line substitution: replace ONLY the line whose stripped
+# content is the test-cert !include, preserving its own indentation and
+# its neighbours' \r\n untouched either side.
+hits = [i for i, l in enumerate(lines) if l.strip() == TEST_INCLUDE]
+if len(hits) > 1:
+    fail("expected at most one Pkcs7Sign/TestRoot !include line in {}, found {}".format(dsc_path, len(hits)))
+if len(hits) == 1:
+    idx = hits[0]
+    indent = lines[idx][:len(lines[idx]) - len(lines[idx].lstrip())]
+    lines[idx] = indent + pcd_line
+    raw = b'\r\n'.join(lines)
+    with open(dsc_path, 'wb') as f:
+        f.write(raw)
+
+# --- structural verification -------------------------------------------
+lines = raw.split(b'\r\n')
+starts = [i for i, l in enumerate(lines) if COMPONENT_START in l]
+if len(starts) != 1:
+    fail("expected exactly one '{}' component line, found {}".format(COMPONENT_START.decode(), len(starts)))
+start = starts[0]
+end = None
+for i in range(start + 1, len(lines)):
+    if lines[i].strip() == b'}':
+        end = i
+        break
+if end is None:
+    fail("could not find the closing '}' for the FmpDxe component block")
+
+block = lines[start:end]
+
+lib_hits = [i for i, l in enumerate(block) if l.strip() == LIB_CLASSES]
+if len(lib_hits) != 1:
+    fail("expected exactly one <LibraryClasses> line inside the FmpDxe component block, found {} -- the certificate swap may have swallowed or duplicated it".format(len(lib_hits)))
+
+fmp_hits = [i for i, l in enumerate(block) if FMP_DEVICE_LIB in l]
+if len(fmp_hits) != 1:
+    fail("expected exactly one FmpDeviceSmmLib FmpDeviceLib assignment inside the FmpDxe component block, found {}".format(len(fmp_hits)))
+
+pcd_hits = [i for i, l in enumerate(block) if PCD_MARKER in l]
+if len(pcd_hits) != 1:
+    fail("expected exactly one embedded PcdFmpDevicePkcs7CertBufferXdr assignment inside the FmpDxe component block, found {} -- FmpDxe has no key to authenticate against and no capsule could ever be applied".format(len(pcd_hits)))
+
+if not (pcd_hits[0] < lib_hits[0] < fmp_hits[0]):
+    fail("FmpDxe component block is out of order: expected cert PCD, then <LibraryClasses>, then FmpDeviceLib (got PCD@{}, LibraryClasses@{}, FmpDeviceLib@{})".format(pcd_hits[0], lib_hits[0], fmp_hits[0]))
+
+print("UefiPayloadPkg.dsc FmpDxe block OK: cert PCD, <LibraryClasses> and FmpDeviceLib present, exactly once each, in order")
+PY
 }
 
 do_compile() {

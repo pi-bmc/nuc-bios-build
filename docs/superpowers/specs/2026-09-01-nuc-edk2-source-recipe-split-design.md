@@ -1,7 +1,7 @@
 # NUC EDK2 source-recipe split — design
 
 **Date:** 2026-09-01
-**Status:** approved, not yet implemented
+**Status:** implemented
 **Branch:** `refactor/edk2-source-recipes` (based on `feat/capsule-updates`)
 
 ## Goal
@@ -301,3 +301,81 @@ removed ISO flow, and the two stale prose references to it in
    hits while the payload rebuilds.
 5. Confirm both GUID drift guards still fire by temporarily perturbing
    `NUC_CAPSULE_GUID`.
+
+## Verified
+
+Measured 2026-09-01 on `refactor/edk2-source-recipes` at `3d6dc1d`.
+
+**Method.** `bitbake -n` over `edk2 edk2-platforms edk2-redfish-client
+edk2-uefipayload coreboot`, which prints one `NOTE: Running task N of M
+(<recipe>.bb:do_<task>)` line per task it would run. A dry run on the
+unperturbed tree is the control: it names only three tasks, all
+`edk2-uefipayload` housekeeping (`do_populate_lic`, `do_create_runtime_spdx`,
+the noexec `do_build`), and matches the `do_(unpack|patch|compile|deploy)`
+grep zero times. Every task below is therefore a real delta from the probe,
+not a standing always-run task. Baseline before each probe was a no-op
+`kas build`: `Sstate summary: Wanted 42 Local 42 Mirrors 0 Missed 0 Current
+235 (100% match, 100% complete)`, `845 tasks of which 845 didn't need to be
+rerun`.
+
+**Probe 1 — append a comment line to
+`edk2-redfish-client/files/0100-RedfishClientPkg-fit-the-client-to-a-Redfish-host-in.patch`.**
+Blast radius **40 tasks** (`Attempted 857 tasks of which 817 didn't need to be
+rerun`), confined to three recipes:
+
+- `edk2-redfish-client_git.bb` — `do_unpack`, `do_patch`, `do_configure`,
+  `do_compile`, `do_install`, `do_populate_sysroot` and friends. Expected.
+- `edk2-uefipayload_2605.bb` — `do_configure`, `do_compile`, `do_deploy`.
+  Expected.
+- `coreboot_git.bb` — `do_configure`, `do_compile`, `do_deploy`. Expected.
+- `edk2_git.bb` — **0 tasks.** `edk2-platforms_git.bb` — **0 tasks.**
+
+This is the property the refactor exists for. Not merely `do_unpack` absent:
+neither tree recipe contributes a single task. Before the split, all three
+trees shared one recipe's `do_fetch[file-checksums]`, so this same one-line
+edit re-unpacked all three — including the 2.4 GB gitsm `edk2` tree.
+
+**Probe 2 — append a comment line to
+`edk2-uefipayload/files/NucRedfishPkg/NucRedfishPkg.dec`.** Blast radius
+**16 tasks** (`Attempted 593 tasks of which 577 didn't need to be rerun`):
+
+- `edk2-uefipayload_2605.bb` — the full unpack/patch/configure/compile/deploy
+  chain. Its own `do_unpack` runs because the `.dec` reaches the build through
+  this recipe's own `SRC_URI`; that is the payload rebuilding, as intended.
+- `edk2_git.bb` — **0 tasks.** `edk2-platforms_git.bb` — **0 tasks.**
+- `edk2-redfish-client_git.bb` — 5 tasks, *all* `_setscene` (`do_populate_
+  sysroot_setscene` and the SPDX/licence setscenes). These are sstate restores
+  into the payload's recipe-sysroot, not rebuilds; no `do_unpack`, `do_patch`
+  or `do_compile` appears for it.
+
+No source tree is unpacked, patched or compiled by a glue-code edit.
+
+**GUID drift guards.** Both still fire after the refactor moved the files they
+read.
+
+- Payload guard, with `NUC_CAPSULE_GUID` overridden to all-zeroes: fails
+  `do_configure` naming all three files the design requires —
+  `NucRedfishPkg/Library/NucCapsuleOnDiskLib/NucCapsuleOnDiskLib.c`,
+  `NucRedfishPkg/NucRedfishSyncDxe/NucRedfishInventory.c` and
+  `UefiPayloadPkg/UefiPayloadPkg.fdf`.
+- Coreboot guard: `NUC_CAPSULE_GUID drift: NUC_CAPSULE_GUID is
+  00000000-0000-0000-0000-000000000000 but .../payload-edk2.config says
+  d25f89e1-94ec-4533-80b9-7f8855ce0a94.` Notably it reads the payload FV from
+  `recipe-sysroot/usr/share/edk2-uefipayload/UEFIPAYLOAD.fd`, so Task 2's
+  sysroot handoff is on the guard's live path rather than bypassed by it.
+
+  A whole-build `NUC_CAPSULE_GUID` override cannot reach this guard: coreboot
+  depends on the payload, so the payload's guard fails first and coreboot's
+  `do_configure` never runs. Exercising it requires scoping the override to
+  `NUC_CAPSULE_GUID:pn-coreboot`.
+
+Restored afterwards: `bitbake -c configure -f edk2-uefipayload coreboot`
+succeeds, logging `UefiPayloadPkg.dsc FmpDxe block OK: cert PCD,
+<LibraryClasses> and FmpDeviceLib present, exactly once each, in order`, and
+`kas build` returns to `100% match, 100% complete` with
+`coreboot-nuc5i7ryh.rom` and `nuc-firmware.cap` deployed. Both probes were
+reverted with `git checkout --` and confirmed byte-identical by md5; the
+working tree is clean.
+
+Capsule behaviour is unchanged by this task; the open `NUC_CAPSULE_VERSION`
+`1 == 1` Critical remains tracked on `feat/capsule-updates`.

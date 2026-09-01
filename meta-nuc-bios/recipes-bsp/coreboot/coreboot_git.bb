@@ -328,13 +328,24 @@ NUC_CAPSULE_KEY ??= ""
 
 # Where edk2-uefipayload_2605.bb's do_deploy staged AppendRmapManifest.py and
 # the BaseTools/Source/Python tree GenerateCapsule.py needs (it is not
-# self-contained -- it imports Common.Uefi.Capsule.* siblings). DEPLOYDIR is
-# the same physical directory for both recipes on this machine (both are
-# machine-specific "deploy"-class recipes for nuc5i7ryh; nuc-coreboot-rom.bb
-# already reads coreboot-nuc5i7ryh.rom, UEFIPAYLOAD.fd and ipxe.rom out of
-# that one shared tree), so this is a same-directory reference, not a
-# cross-multiconfig reach.
-EDK2_CAPSULE_TOOLS = "${DEPLOYDIR}/edk2-capsule-tools"
+# self-contained -- it imports Common.Uefi.Capsule.* siblings).
+#
+# MUST be DEPLOY_DIR_IMAGE, not DEPLOYDIR: deploy.bbclass makes DEPLOYDIR a
+# private per-task staging directory (${WORKDIR}/deploy-${PN}) that the
+# class only publishes into the shared, machine-specific DEPLOY_DIR_IMAGE
+# after the task finishes -- two sibling recipes' DEPLOYDIR values are two
+# different directories that are never the same on disk while either task
+# is running. This recipe's own do_configure already reads
+# ${DEPLOY_DIR_IMAGE}/UEFIPAYLOAD.fd for exactly that reason, and
+# nuc-coreboot-rom.bb reads coreboot-nuc5i7ryh.rom/UEFIPAYLOAD.fd/ipxe.rom
+# the same way -- DEPLOY_DIR_IMAGE is this layer's one cross-recipe sharing
+# convention, DEPLOYDIR never is. (Writes to ${DEPLOYDIR} elsewhere in this
+# recipe's own do_deploy are correct as they stand: that is this recipe's
+# own new output, which the class publishes into DEPLOY_DIR_IMAGE for
+# everyone else once this task completes -- the same way
+# coreboot-nuc5i7ryh.rom already worked before this file had a capsule
+# step at all.)
+EDK2_CAPSULE_TOOLS = "${DEPLOY_DIR_IMAGE}/edk2-capsule-tools"
 
 # Refuse EDK2's own published test certificate chain
 # (BaseTools/Source/Python/Pkcs7Sign) no matter how it got configured. Its
@@ -473,6 +484,21 @@ python () {
         # do_configure reads the deployed .fd path, so the dependency is on
         # configure rather than compile.
         d.appendVarFlag('do_configure', 'depends',
+                        ' edk2-uefipayload:do_deploy')
+        # do_deploy (capsule generation) reads AppendRmapManifest.py and the
+        # BaseTools/Source/Python tree edk2-uefipayload's own do_deploy
+        # stages into DEPLOY_DIR_IMAGE. That chain is already transitively
+        # ordered after edk2-uefipayload:do_deploy via
+        # do_configure -> do_compile -> "addtask deploy after do_compile"
+        # above, so this line does not change *what* ends up ordered before
+        # coreboot's do_deploy runs -- the actual bug that first broke this
+        # was EDK2_CAPSULE_TOOLS pointing at DEPLOYDIR (this recipe's own
+        # private per-task staging dir, which can never contain another
+        # recipe's output) instead of DEPLOY_DIR_IMAGE. This is declared
+        # explicitly anyway so the dependency do_deploy actually consumes is
+        # not left to be inferred through do_configure's, which could
+        # silently stop covering it if the task chain above ever changes.
+        d.appendVarFlag('do_deploy', 'depends',
                         ' edk2-uefipayload:do_deploy')
 }
 

@@ -107,30 +107,33 @@ the stock backup off-device; recovery without it needs an external SOIC-8
 clip. Keep the BIOS-security jumper in normal mode — the port's PTT fTPM
 needs the ME running.
 
-## Flasher live ISO (flash remotely over the JetKVM)
+## Self-flashing image (flash remotely over the JetKVM)
 
 Useful for updates once coreboot is in — it uses the internal programmer, so it
 cannot perform the initial flash past the stock BIOS's `SMM_BWP`.
 
-To flash without a local shell, build a self-contained bootable ISO that
-carries `flashrom`, the coreboot ROM, and helper scripts — attach it to the
-NUC as JetKVM virtual media and boot it:
+To flash without a local shell, build a self-contained bootable image that
+carries `flashrom`, this build's coreboot ROM, and an init that does the whole
+job unattended — attach it to the NUC as JetKVM virtual media, or dd it to a
+USB stick, and boot it:
 
 ```sh
-kas build kas-flasher.yml
-# -> build/tmp-flasher/deploy/images/intel-corei7-64/nuc-flasher-image-*.iso
+./scripts/make-flasher-img.sh
+# -> nuc-bios-flasher.img   (defaults: the ROM from build/tmp/deploy, repo root)
 ```
 
-It's an `intel-corei7-64` live image (hybrid BIOS+UEFI El Torito, ~360 MiB —
-`linux-firmware` stripped) built under the `flasher` multiconfig;
-`nuc-coreboot-rom` pulls the ROM in from the default multiconfig, so the ISO
-always carries the current coreboot output. On boot: root logs in with no
-password, sshd + DHCP come up, and the login banner lists the steps:
+It is a single EFI unified kernel image (a stock Alpine -lts kernel plus a
+bundled static busybox, flashrom and the ROM), so it needs no multiconfig and
+no second Yocto build. On boot its init verifies the BIOS region and:
 
-1. `backup-bios` — reads + verifies the factory firmware to `/root`
-2. `scp` it off the machine (the rootfs is RAM-only; `ip addr` for the IP)
-3. `flash-coreboot` — writes the BIOS region only, then verifies
-4. `poweroff`, then power-cycle
+- **already this ROM** — reboots, so leaving it attached never loops
+- **differs** — flashes the BIOS region only, then reboots
+- **write fails** — drops to a shell and does *not* reboot
 
-Recovery if it won't POST: boot the ISO again and
-`flashrom -p internal --ifd -i bios -w /root/stock-bios.rom`.
+Internal flashing needs no SOIC clip because the running coreboot leaves the
+SPI unlocked (`BOOTMEDIA_LOCK_NONE`). A machine still on the stock Intel BIOS
+has `SMM_BWP` set and cannot self-flash — use `scripts/nuc-spi.sh` with the
+clip once to get coreboot on in the first place.
+
+Recovery if it won't POST: flash the factory backup back with the clip,
+`flashrom -p <programmer> --ifd -i bios -w stock-bios.rom`.

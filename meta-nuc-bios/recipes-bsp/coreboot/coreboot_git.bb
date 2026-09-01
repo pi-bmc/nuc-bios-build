@@ -316,9 +316,9 @@ do_compile() {
 
 # --- UEFI capsule: RMAP manifest + signed .cap --------------------------
 #
-# This is the ONLY recipe with the finished ROM. edk2-uefipayload's
-# do_deploy publishes UEFIPAYLOAD.fd, one of coreboot.rom's inputs; the
-# assembled 8 MiB image (mainboard, blobs, the payload embedded via
+# This is the ONLY recipe with the finished ROM. edk2-uefipayload stages
+# UEFIPAYLOAD.fd, one of coreboot.rom's inputs, into this recipe's sysroot;
+# the assembled 8 MiB image (mainboard, blobs, the payload embedded via
 # PAYLOAD_FILE) exists for the first time right here, in do_deploy below.
 # A capsule built from the payload alone would be missing everything
 # coreboot itself contributes, so capsule generation belongs in this

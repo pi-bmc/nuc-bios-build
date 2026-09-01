@@ -223,7 +223,7 @@ screen:
 
 ```sh
 ssh root@10.1.40.22 'cat /sys/firmware/acpi/bgrt/image' > bgrt.bmp
-cmp bgrt.bmp meta-nuc-bios/recipes-bsp/edk2/files/bootsplash.bmp
+cmp bgrt.bmp meta-nuc-bios/recipes-bsp/edk2-uefipayload/files/bootsplash.bmp
 ssh root@10.1.40.22 'cat /sys/firmware/acpi/bgrt/status'   # 1 = actually drawn
 ```
 
@@ -269,7 +269,7 @@ The JetKVM has no `scp` or sftp-server, so copy files to it with
 The NUC's firmware and the JetKVM talk Redfish over the USB CDC-ECM link
 (DSP0270). Both halves live in this repo's sibling checkouts:
 
-- host: `meta-nuc-bios/recipes-bsp/edk2/files/NucRedfishPkg` (built into the
+- host: `meta-nuc-bios/recipes-bsp/edk2-uefipayload/files/NucRedfishPkg` (built into the
   payload; see its README)
 - BMC: `jetkvm-community/kvm/redfish.go` and `usb.go`
 

@@ -15,18 +15,28 @@ missing is a **bridge**: the BMC delivers capsules as *files on a volume*,
 while every delivery path Dasharo implemented is an OS calling
 `UpdateCapsule()` at runtime. That bridge is this project.
 
-## Upstream status
+## Upstream status and the RMAP patch
 
-coreboot's half is upstream at our SRCREV. The **payload half is not**: coreboot's
-`Documentation/drivers/efi_capsule_generation.md` tracks it as
-tianocore/edk2 PR **#12053**, warning that "older EDK2 trees may be missing
-pieces required by this integration".
+coreboot's half is upstream at our SRCREV. The payload's *base* half is already
+in our pinned MrChromebox fork -- `FmpDeviceSmmLib`, `ParseCapsules()` and
+`CB_TAG_CAPSULE` are all present and verified.
 
-Our pinned MrChromebox fork already carries it -- `FmpDeviceSmmLib`,
-`ParseCapsules()` and `CB_TAG_CAPSULE` are all present and verified. So we
-inherit the payload changes without patching them in ourselves, and edk2-tree
-edits stay limited to DSC/FDF wiring delivered as quilt patches, keeping
-upstream pullable.
+On top of that we carry **tianocore/edk2 PR #12861** (StarLabs branch
+`agent/upstream-rmap-capsule`), which is not upstream yet. It is 13 files,
+~102 KB, all confined to `UefiPayloadPkg`, and it is what makes this design
+safe rather than merely possible:
+
+| file | what it adds |
+| --- | --- |
+| `FmpDeviceSmmManifest.{c,h}` | RMAP region-manifest parsing |
+| `FmpDeviceSmmUpdatePolicy.{c,h}` | overlap detection, variable-service policy |
+| `FmpDeviceSmmFlashRetry.{c,h}` | transient flash-error retry |
+| `Tools/AppendRmapManifest.py` | builds the manifest trailer |
+| `FmpDeviceSmmLibUnitTest.c`, `UefiPayloadPkgHostTest.dsc` | 15 host-runnable unit tests |
+
+It is delivered as a quilt patch in the recipe series, exactly like every other
+edk2 change here, so upstream edk2 stays pullable and the patch retires when
+the PR merges.
 
 ## What already exists (verified, not assumed)
 
@@ -133,53 +143,52 @@ handshake in the same `CONFIG()` test. Without the Kconfig the SMI handler is
 confined to the 512 KB SMMSTORE FMAP region and `FmpDeviceSmmLib` physically
 cannot reach the BIOS region. This is the single easiest thing to get wrong.
 
-## Region preservation -- what actually happens
+## Region preservation -- solved by the RMAP manifest
 
 Inside `BIOS@0x1a0000 0x660000`: `RW_MRC_CACHE` (0x10000), `SMMSTORE(PRESERVE)`
 (0x80000), `FMAP` (0x1000), `CONSOLE` (0x20000), `COREBOOT(CBFS)` (remainder).
 
-**`FmpDeviceSmmLib` writes the whole BIOS region and honors no allowlist.** Its
-own header says so:
+Without PR #12861, `FmpDeviceSmmLib` writes the **whole BIOS region** and honors
+no allowlist -- its header calls region selectivity future work. That is the
+behaviour the PR implements.
 
-> the BIOS region).  In the future, this can be made more flexible, say, by
-> parsing coreboot's FMAP and only updating some regions.
+**RMAP manifest.** A trailer appended to the firmware image inside the capsule:
 
-Region selectivity is explicitly unimplemented. `DRIVERS_EFI_CAPSULE_REGIONS`
-does not change this -- it is a *capsule-generation* input (an allowlist
-manifest embedded in the ROM), consumed when building the capsule, not by the
-flasher. Nothing in our payload reads it.
+```c
+#define REGION_MANIFEST_SIGNATURE  SIGNATURE_32 ('R','M','A','P')
+typedef struct { UINT32 Signature; UINT16 Version; UINT16 EntryCount; }
+  REGION_MANIFEST_TRAILER;
+typedef struct { CHAR8 RegionName[16]; } REGION_MANIFEST_ENTRY;
+```
 
-Two consequences, both by design and both handled upstream:
+It lists the FMAP regions the update may program. `AppendRmapManifest.py`
+builds it. **If the manifest is absent, the firmware falls back to full-flash**
+-- so it is opt-in, and omitting it silently restores the destructive
+behaviour.
 
-1. **SMMSTORE is overwritten**, so the running firmware's variable store
-   disappears mid-update. The library handles this: on success it swaps
-   `gRT->GetVariable` / `SetVariable` / `GetNextVariableName` /
-   `QueryVariableInfo` for no-op stubs and recomputes `gRT->Hdr.CRC32`, because
-   both coreboot's SMI handler and EDK2's variable services would otherwise be
-   wrong about the region's location, size and contents -- and touching it
-   could corrupt the *new* image.
-2. **The new firmware cannot report the flash result.** The library states
-   plainly: "New firmware will not report result of flashing in any way unless
-   some kind of communication mechanism is implemented for this purpose."
+**Our manifest is `COREBOOT` only.** `SMMSTORE`, `RW_MRC_CACHE` and `FMAP` are
+excluded, which buys three things the earlier full-flash design could not have:
 
-**Ordering constraint this imposes on the scanner:** after a successful
-`SetImage`, no variable write can succeed. The scanner must therefore read
-`LastAttemptStatus` from the in-memory FMP descriptor (not a variable), delete
-the capsule file (filesystem, still available), and cold reset -- in that
-order, with no `SetVariable` in between. Any marker-variable scheme is
-impossible here, which independently confirms the flagless design: there is no
-second boot to correlate with.
+1. **The variable store survives.** The library checks whether any write range
+   overlaps the live SMMSTORE range; if none does it sets
+   `VariableStorePreserved`, and
+   `FmpDeviceShouldDisableVariableServices (UseManifest && VariableStorePreserved)`
+   then leaves `gRT`'s variable services intact instead of swapping in no-op
+   stubs. Boot entries, Secure Boot state and CFR settings survive an update.
+2. **`LastAttemptStatus` persists.** With variable services alive, FmpDxe can
+   write the final status -- which is what contract duty 4's
+   `SoftwareInventory` PATCH needs to report something true.
+3. **No ordering constraint on the scanner.** Because variable services are not
+   stubbed, the scanner may write variables after a successful `SetImage`. The
+   flagless design does not depend on this, but it removes a sharp edge.
 
-The capsule payload is consequently a **full BIOS-region image**
-(0x660000 bytes at 0x1a0000), and a capsule update resets the variable store.
-That is a real behavioural consequence -- boot entries, Secure Boot state and
-CFR settings do not survive an update -- and it must be stated in operator
-docs rather than discovered.
+`RW_MRC_CACHE` staying out of the manifest also means no memory-retraining boot
+after an update.
 
-`FmpDeviceSmmLib`'s own `IoError` path names the failure causes worth watching:
-an actual flash fault, a bug in coreboot's SMMSTORE SMI handler, coreboot not
-lifting flash protections, or Intel ME not being disabled. Our descriptor check
-rules out the ME case for this board.
+The library's `IoError` path names the failure causes worth watching: a real
+flash fault, a bug in coreboot's SMMSTORE SMI handler, coreboot not lifting
+flash protections, or Intel ME not being disabled. Our descriptor check rules
+out the ME case for this board.
 
 ## Components
 
@@ -273,9 +282,18 @@ Replace it the way rpi5 does with `rpi5_fmp_resolve_keys` and
 
 ## Testing
 
-Unit-testable on the build host, the same harness shape as the CDC-EEM framing
-tests: capsule header parsing, the drop-box walk's file filtering, and
-`PERSIST_ACROSS_RESET` rejection.
+PR #12861 ships `UefiPayloadPkg/Test/UefiPayloadPkgHostTest.dsc` with 15
+host-runnable unit tests over exactly the dangerous logic -- manifest parsing
+("Absent manifest is reported", "Malformed manifest fails closed"), range
+overlap ("Overlapping ranges are detected", "Adjacent ranges do not overlap",
+"Malformed ranges fail closed"), the variable-service policy ("Preserved store
+keeps variable services", "Unproven store disables variable services"), step
+counting, and flash retry exhaustion. These run in CI without hardware and
+should be wired into the build.
+
+Our own scanner adds host tests in the same shape as the CDC-EEM framing tests:
+capsule header parsing, drop-box file filtering, and `PERSIST_ACROSS_RESET`
+rejection.
 
 Everything past `UpdateCapsule()` requires the board. Given the brick risk,
 first hardware validation happens on a unit with a SOIC-8 clip attached.

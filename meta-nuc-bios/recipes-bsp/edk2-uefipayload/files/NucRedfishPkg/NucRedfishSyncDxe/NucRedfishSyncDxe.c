@@ -6,8 +6,9 @@
   CDC-ECM NIC and configures REST EX, and RedfishConfigHandlerDriver signals that
   a service is available. Nothing then talks to it. The drivers that would --
   edk2-redfish-client's feature layer -- are not buildable against this tree (see
-  the note above SRC_URI in edk2-uefipayload_2605.bb), so on a stock RedfishPkg build
-  the whole chain completes and BDS boots the OS without a single HTTP request.
+  the DESCRIPTIONs in edk2-uefipayload_2605.bb and edk2-redfish-client_git.bb), so
+  on a stock RedfishPkg build the whole chain completes and BDS boots the OS
+  without a single HTTP request.
   Confirmed on hardware 2026-07-29: cbmem showed "Redfish service ... is
   discovered!" immediately followed by "[Bds]BdsWait", and the BMC logged nothing.
 

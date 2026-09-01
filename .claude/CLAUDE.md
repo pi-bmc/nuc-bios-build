@@ -25,7 +25,7 @@ refused, so a password failure for root does not imply a wrong password.
 
 ```sh
 kas build kas.yml        # -> build/tmp/deploy/images/nuc5i7ryh/coreboot-nuc5i7ryh.rom
-bitbake edk2-uefipayload # payload alone; coreboot consumes its deployed UEFIPAYLOAD.fd
+bitbake edk2-uefipayload # payload alone; coreboot consumes the sysroot-staged UEFIPAYLOAD.fd
 ```
 
 The payload is a separate recipe from coreboot on purpose (see the DESCRIPTION in

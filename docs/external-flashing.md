@@ -3,7 +3,7 @@
 The stock Intel BIOS locks the SPI controller, so the first coreboot flash has
 to bypass the PCH entirely with a clip-on programmer. This is a **one-time
 bootstrap**: coreboot does not set the lock bits, so every subsequent update
-goes back to `flashrom -p internal` (or the flasher live ISO, `kas-flasher.yml`).
+goes back to `flashrom -p internal` from a shell on the NUC itself.
 
 ## Why the internal path does not work
 
@@ -244,9 +244,6 @@ Linux on the NUC:
 flashrom -p internal --ifd -i bios -w stock-bios.rom
 ```
 
-This is also what the flasher live ISO does if you can't get a local shell —
-boot it as JetKVM virtual media, `scp` the backup in, and run the same command.
-
 Then **clear CMOS** (unplug, pull the coin cell for a minute) before booting.
 The stock BIOS will otherwise find coreboot-era CMOS contents.
 
@@ -277,5 +274,6 @@ coreboot leaves the BIOS region writable, so the clip is retired:
 flashrom -p internal --ifd -i bios -w coreboot-nuc5i7ryh.rom
 ```
 
-which is exactly what the flasher live ISO automates — build it with
-`kas build kas-flasher.yml` and attach it as JetKVM virtual media.
+If the board will not POST far enough to run that, the clip goes back on and
+`./scripts/nuc-spi.sh flash` writes the ROM the same way it did for the
+bootstrap. The external programmer is always the fallback.
